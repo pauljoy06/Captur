@@ -17,6 +17,10 @@ ProofSnip is a Windows 11 snipping and evidence-export application written in Ru
 - Escape cancellation, selection dimensions, dimmed outside area, handles, and compact copy confirmation.
 - Background WIC PNG saving.
 - In-memory evidence sessions with captions, Before/Action/After labels, reordering, removal, and Capture + Note.
+- Optional annotation workspace with Arrow, Rectangle, Highlight, Text, Blur/redact, and sequential number markers. The primary tools are keyboard accessible with `A`, `R`, `H`, `T`, `B`, `1`, `C`, `Enter`, and `Escape`.
+- Lightweight always-on-top pinned screenshot viewport for visual comparison.
+- Notification-area lifecycle with **Show ProofSnip** and **Exit** actions. Closing the workspace keeps the resident capture process running.
+- Optional per-user Windows startup registration through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Login startup uses `--background`, so only the resident hotkeys and notification-area icon start initially.
 - Background direct PDF generation with A4/landscape layouts, embedded DejaVu Sans, aspect-ratio preservation, and tall-capture pagination.
 - Capture-path timing display for hotkey-to-overlay, desktop capture, crop, and mouse-release-to-clipboard.
 
@@ -34,7 +38,10 @@ src/
 │   ├── hotkeys.rs       resident RegisterHotKey message thread
 │   ├── clipboard.rs     CF_DIBV5 clipboard ownership
 │   ├── dialog.rs        native save dialogs
+│   ├── startup.rs       current-user Windows startup registration
+│   ├── tray.rs          notification-area icon and native message loop
 │   └── windows.rs       DPI and native window positioning
+├── annotations/mod.rs   annotation model and BGRA software rasterizer
 ├── encoding/wic.rs      isolated WIC PNG encoder
 ├── evidence/mod.rs      session model and JSON folder representation
 ├── export/pdf.rs        immutable model to direct PDF generation
@@ -125,6 +132,8 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 - **Capture freshness:** ProofSnip hides its window and calls `DwmFlush` before acquiring a frame. Desktop Duplication can still return timeout or access-lost errors during display changes, secure-desktop transitions, or device resets. Those errors are reported and the next capture creates fresh DXGI state.
 - **PDF memory:** export consumes an immutable session snapshot and raw BGRA images on a worker thread. This preserves screenshot quality and capture responsiveness, but a session containing many 4K screenshots can temporarily use substantial memory while the PDF is assembled.
 - **WSL boundary:** compilation is validated in WSL with the MSVC target and `cargo-xwin`. Actual global-hotkey, clipboard, mixed-DPI, GPU, and paste behavior must be exercised in an interactive Windows desktop session.
+- **Secondary egui viewports:** pinned screenshots use egui's immediate native viewport support. Always-on-top behavior, resizing, and close handling should be checked against the installed Windows graphics driver and desktop configuration.
+- **Annotation cost:** annotations are previewed as egui vector shapes, then rasterized into a BGRA frame only when copied or completed. Text rasterization uses isolated GDI calls through windows-rs. This work is outside the snipping critical path.
 - **eframe internals:** ProofSnip does not directly depend on or use `arboard`, `image`, or `png` for screenshot capture or encoding. The required eframe 0.36 native integration currently enables those crates transitively for its own clipboard/icon support and does not expose a feature to disable them. ProofSnip's capture clipboard remains the native `CF_DIBV5` implementation and WIC remains its only PNG encoder.
 
 ## Manual acceptance test
@@ -137,7 +146,11 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 6. Press `Ctrl+Shift+5` and confirm the identical native-pixel region is copied.
 7. Press `Ctrl+Shift+7` over each monitor, then `Ctrl+Shift+8` with a normal window active.
 8. Press `Ctrl+Shift+6` to inspect the recorded timings.
-9. Add several captures to evidence, caption and reorder them, then choose **Export PDF**.
+9. Choose **Annotate**, exercise `A`, `R`, `H`, `T`, `B`, and `1`, then press `Enter`. Confirm the annotated result is immediately pasteable.
+10. Choose **Pin latest**, switch to another application, and confirm the capture remains above normal windows without blocking input.
+11. Close the workspace, confirm ProofSnip remains in the notification area, reopen it from the icon, and use the icon's **Exit** command when finished.
+12. Toggle **Start ProofSnip when I sign in to Windows**, verify the current-user Run value, then toggle it off if startup is not desired.
+13. Add several captures to evidence, caption and reorder them, then choose **Export PDF**. Check one, multiple, portrait, wide, 4K, and tall screenshots in the generated document.
 
 The workspace performance card reports the first-order latency measurements. Validate mixed-DPI layouts with monitors at different Windows scale factors and with a monitor positioned left or above the primary display.
 

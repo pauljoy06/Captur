@@ -9,6 +9,7 @@ use std::{
 use egui::{Color32, CornerRadius, RichText, Stroke, StrokeKind, TextureHandle};
 
 use crate::{
+    annotations::{AnnotationDocument, AnnotationItem, AnnotationPoint, AnnotationTool},
     capture::{
         BgraFrame, dxgi,
         region::{PixelPoint, PixelRect},
@@ -19,6 +20,8 @@ use crate::{
     platform::{
         clipboard, dialog,
         hotkeys::{HotkeyEvent, HotkeyReceiver},
+        startup,
+        tray::{TrayEvent, TrayReceiver},
         windows,
     },
     ui::theme,
@@ -30,6 +33,7 @@ enum AppMode {
     Overlay,
     Note,
     Toast,
+    Annotate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +64,13 @@ struct CaptureTimings {
     release_to_clipboard: Option<Duration>,
 }
 
+#[derive(Clone)]
+struct PinnedCapture {
+    texture: TextureHandle,
+    width: u32,
+    height: u32,
+}
+
 pub struct ProofSnipApp {
     mode: AppMode,
     hotkeys: HotkeyReceiver,
@@ -84,6 +95,16 @@ pub struct ProofSnipApp {
     worker_sender: Sender<WorkerMessage>,
     worker_receiver: Receiver<WorkerMessage>,
     export_in_progress: bool,
+    pinned_capture: Option<PinnedCapture>,
+    startup_enabled: bool,
+    tray: Option<TrayReceiver>,
+    exit_requested: bool,
+    annotation_source: Option<BgraFrame>,
+    annotation_texture: Option<TextureHandle>,
+    annotation_document: AnnotationDocument,
+    annotation_tool: AnnotationTool,
+    annotation_drag_start: Option<AnnotationPoint>,
+    annotation_text: String,
 }
 
 impl ProofSnipApp {
@@ -91,6 +112,17 @@ impl ProofSnipApp {
         theme::apply(&cc.egui_ctx);
         let hotkeys = HotkeyReceiver::start(cc.egui_ctx.clone());
         let (worker_sender, worker_receiver) = mpsc::channel();
+        let startup_enabled = startup::is_enabled().unwrap_or(false);
+        let (tray, status) = match TrayReceiver::start(cc.egui_ctx.clone()) {
+            Ok(tray) => (
+                Some(tray),
+                "Ready · Ctrl+Shift+4 captures a region".to_owned(),
+            ),
+            Err(error) => (
+                None,
+                format!("Ready · notification area unavailable: {error}"),
+            ),
+        };
         Self {
             mode: AppMode::Workspace,
             hotkeys,
@@ -109,12 +141,39 @@ impl ProofSnipApp {
             note_anchor: PixelRect::default(),
             toast_until: None,
             toast_text: String::new(),
-            status: "Ready · Ctrl+Shift+4 captures a region".into(),
+            status,
             timings: CaptureTimings::default(),
             timing_history: VecDeque::new(),
             worker_sender,
             worker_receiver,
             export_in_progress: false,
+            pinned_capture: None,
+            startup_enabled,
+            tray,
+            exit_requested: false,
+            annotation_source: None,
+            annotation_texture: None,
+            annotation_document: AnnotationDocument::new(),
+            annotation_tool: AnnotationTool::Arrow,
+            annotation_drag_start: None,
+            annotation_text: String::new(),
+        }
+    }
+
+    fn poll_tray(&mut self, context: &egui::Context) {
+        while let Some(event) = self.tray.as_ref().and_then(|tray| tray.try_recv().ok()) {
+            match event {
+                TrayEvent::ShowWorkspace => {
+                    self.mode = AppMode::Workspace;
+                    if let Err(error) = windows::show_workspace() {
+                        self.status = error;
+                    }
+                }
+                TrayEvent::Exit => {
+                    self.exit_requested = true;
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         }
     }
 
@@ -570,12 +629,286 @@ impl ProofSnipApp {
         self.evidence_textures.insert(id, texture);
     }
 
+    fn start_annotation(&mut self, context: &egui::Context) {
+        let Some(frame) = self.last_capture.clone() else {
+            self.status = "Capture an image before annotating it".into();
+            return;
+        };
+        self.annotation_source = Some(frame);
+        self.annotation_texture = self.last_capture_texture.clone();
+        self.annotation_document.clear();
+        self.annotation_tool = AnnotationTool::Arrow;
+        self.annotation_drag_start = None;
+        self.annotation_text.clear();
+        self.mode = AppMode::Annotate;
+        if let Err(error) = windows::show_workspace() {
+            self.status = error;
+        }
+        context.request_repaint();
+    }
+
+    fn render_annotation(&mut self, root: &mut egui::Ui) {
+        let context = root.ctx().clone();
+        let Some(source) = self.annotation_source.as_ref() else {
+            self.mode = AppMode::Workspace;
+            return;
+        };
+        let Some(texture) = self.annotation_texture.clone() else {
+            self.mode = AppMode::Workspace;
+            return;
+        };
+        let image_width = source.width;
+        let image_height = source.height;
+        let mut copy_requested = false;
+        let mut done_requested = false;
+        let mut cancel_requested = false;
+
+        if !context.egui_wants_keyboard_input() {
+            context.input(|input| {
+                if input.key_pressed(egui::Key::A) {
+                    self.annotation_tool = AnnotationTool::Arrow;
+                } else if input.key_pressed(egui::Key::R) {
+                    self.annotation_tool = AnnotationTool::Rectangle;
+                } else if input.key_pressed(egui::Key::H) {
+                    self.annotation_tool = AnnotationTool::Highlight;
+                } else if input.key_pressed(egui::Key::T) {
+                    self.annotation_tool = AnnotationTool::Text;
+                } else if input.key_pressed(egui::Key::B) {
+                    self.annotation_tool = AnnotationTool::Redact;
+                } else if input.key_pressed(egui::Key::Num1) {
+                    self.annotation_tool = AnnotationTool::Marker;
+                }
+                copy_requested = input.key_pressed(egui::Key::C);
+                done_requested = input.key_pressed(egui::Key::Enter);
+                cancel_requested = input.key_pressed(egui::Key::Escape);
+            });
+        }
+
+        egui::Panel::top("annotation-toolbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::SURFACE)
+                    .inner_margin(egui::Margin::symmetric(14, 10)),
+            )
+            .show(root, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    annotation_tool_button(
+                        ui,
+                        &mut self.annotation_tool,
+                        AnnotationTool::Arrow,
+                        "Arrow  A",
+                    );
+                    annotation_tool_button(
+                        ui,
+                        &mut self.annotation_tool,
+                        AnnotationTool::Rectangle,
+                        "Rectangle  R",
+                    );
+                    annotation_tool_button(
+                        ui,
+                        &mut self.annotation_tool,
+                        AnnotationTool::Highlight,
+                        "Highlight  H",
+                    );
+                    annotation_tool_button(
+                        ui,
+                        &mut self.annotation_tool,
+                        AnnotationTool::Text,
+                        "Text  T",
+                    );
+                    annotation_tool_button(
+                        ui,
+                        &mut self.annotation_tool,
+                        AnnotationTool::Redact,
+                        "Blur  B",
+                    );
+                    annotation_tool_button(
+                        ui,
+                        &mut self.annotation_tool,
+                        AnnotationTool::Marker,
+                        "Number  1",
+                    );
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            !self.annotation_document.items.is_empty(),
+                            egui::Button::new("Undo"),
+                        )
+                        .clicked()
+                    {
+                        self.annotation_document.undo();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.annotation_document.items.is_empty(),
+                            egui::Button::new("Clear"),
+                        )
+                        .clicked()
+                    {
+                        self.annotation_document.clear();
+                    }
+                    if ui.button("Copy  C").clicked() {
+                        copy_requested = true;
+                    }
+                    if ui.button("Done  Enter").clicked() {
+                        done_requested = true;
+                    }
+                    if ui.button("Cancel  Esc").clicked() {
+                        cancel_requested = true;
+                    }
+                });
+                if self.annotation_tool == AnnotationTool::Text {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.annotation_text)
+                            .hint_text("Type text, then click the screenshot")
+                            .desired_width(420.0),
+                    );
+                }
+            });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
+            .show(root, |ui| {
+                let available = ui.available_size();
+                let scale = (available.x / image_width as f32)
+                    .min(available.y / image_height as f32)
+                    .min(1.0)
+                    .max(0.01);
+                let image_size =
+                    egui::vec2(image_width as f32 * scale, image_height as f32 * scale);
+                ui.centered_and_justified(|ui| {
+                    let (image_rect, response) =
+                        ui.allocate_exact_size(image_size, egui::Sense::click_and_drag());
+                    ui.painter().image(
+                        texture.id(),
+                        image_rect,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+
+                    if response.drag_started() {
+                        self.annotation_drag_start =
+                            response.interact_pointer_pos().map(|position| {
+                                ui_to_annotation(position, image_rect, image_width, image_height)
+                            });
+                    }
+                    if response.drag_stopped() {
+                        if let (Some(start), Some(position)) = (
+                            self.annotation_drag_start.take(),
+                            response.interact_pointer_pos(),
+                        ) {
+                            let end =
+                                ui_to_annotation(position, image_rect, image_width, image_height);
+                            self.add_drag_annotation(start, end);
+                        }
+                    }
+                    if response.clicked() {
+                        if let Some(position) = response.interact_pointer_pos() {
+                            let point =
+                                ui_to_annotation(position, image_rect, image_width, image_height);
+                            match self.annotation_tool {
+                                AnnotationTool::Marker => {
+                                    self.annotation_document.add_marker(point);
+                                }
+                                AnnotationTool::Text if !self.annotation_text.trim().is_empty() => {
+                                    self.annotation_document.add_item(AnnotationItem::Text {
+                                        position: point,
+                                        text: self.annotation_text.trim().to_owned(),
+                                        size: 24,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    for item in &self.annotation_document.items {
+                        paint_annotation(ui.painter(), item, image_rect, image_width, image_height);
+                    }
+                    if let (Some(start), Some(position)) =
+                        (self.annotation_drag_start, response.interact_pointer_pos())
+                    {
+                        let end = ui_to_annotation(position, image_rect, image_width, image_height);
+                        if let Some(preview) = annotation_for_drag(self.annotation_tool, start, end)
+                        {
+                            paint_annotation(
+                                ui.painter(),
+                                &preview,
+                                image_rect,
+                                image_width,
+                                image_height,
+                            );
+                        }
+                    }
+                });
+            });
+
+        if cancel_requested {
+            self.annotation_source = None;
+            self.annotation_texture = None;
+            self.annotation_document.clear();
+            self.mode = AppMode::Workspace;
+            self.status = "Annotation cancelled".into();
+        } else if done_requested {
+            self.finish_annotation(&context, true);
+        } else if copy_requested {
+            self.copy_annotation_preview();
+        }
+    }
+
+    fn add_drag_annotation(&mut self, start: AnnotationPoint, end: AnnotationPoint) {
+        if let Some(item) = annotation_for_drag(self.annotation_tool, start, end) {
+            self.annotation_document.add_item(item);
+        }
+    }
+
+    fn copy_annotation_preview(&mut self) {
+        let Some(source) = self.annotation_source.as_ref() else {
+            return;
+        };
+        let rendered = self.annotation_document.render(source);
+        self.status = match clipboard::copy_bgra_to_clipboard(&rendered) {
+            Ok(()) => "Annotated screenshot copied".into(),
+            Err(error) => error,
+        };
+    }
+
+    fn finish_annotation(&mut self, context: &egui::Context, copy_to_clipboard: bool) {
+        let Some(source) = self.annotation_source.take() else {
+            self.mode = AppMode::Workspace;
+            return;
+        };
+        let rendered = self.annotation_document.render(&source);
+        let clipboard_result = if copy_to_clipboard {
+            clipboard::copy_bgra_to_clipboard(&rendered)
+        } else {
+            Ok(())
+        };
+        self.last_capture_texture = Some(context.load_texture(
+            "latest-annotated",
+            rendered.to_egui_image(),
+            egui::TextureOptions::LINEAR,
+        ));
+        self.last_capture = Some(rendered);
+        self.annotation_texture = None;
+        self.annotation_document.clear();
+        self.mode = AppMode::Workspace;
+        self.status = match clipboard_result {
+            Ok(()) => "Annotations applied and screenshot copied".into(),
+            Err(error) => format!("Annotations applied, but clipboard copy failed: {error}"),
+        };
+    }
+
     fn render_workspace(&mut self, root: &mut egui::Ui) {
         let context = root.ctx().clone();
         let mut capture_request = None;
         let mut export_requested = false;
         let mut add_last = false;
         let mut save_last = false;
+        let mut annotate_last = false;
+        let mut pin_last = false;
+        let mut unpin = false;
+        let mut startup_change = None;
         let mut reorder: Option<(usize, i32)> = None;
         let mut remove = None;
 
@@ -645,6 +978,23 @@ impl ProofSnipApp {
                 });
 
                 ui.add_space(10.0);
+                theme::card().show(ui, |ui| {
+                    ui.label(RichText::new("Settings").strong().color(theme::TEXT));
+                    let response = ui.checkbox(
+                        &mut self.startup_enabled,
+                        "Start ProofSnip when I sign in to Windows",
+                    );
+                    if response.changed() {
+                        startup_change = Some(self.startup_enabled);
+                    }
+                    ui.label(
+                        RichText::new("Stored locally in the current user's Windows Run key.")
+                            .small()
+                            .color(theme::MUTED),
+                    );
+                });
+
+                ui.add_space(10.0);
                 if let (Some(frame), Some(texture)) =
                     (&self.last_capture, &self.last_capture_texture)
                 {
@@ -670,6 +1020,15 @@ impl ProofSnipApp {
                             }
                             if ui.button("Save PNG").clicked() {
                                 save_last = true;
+                            }
+                            if ui.button("Annotate").clicked() {
+                                annotate_last = true;
+                            }
+                            if ui.button("Pin latest").clicked() {
+                                pin_last = true;
+                            }
+                            if self.pinned_capture.is_some() && ui.button("Unpin").clicked() {
+                                unpin = true;
                             }
                         });
                     });
@@ -814,6 +1173,41 @@ impl ProofSnipApp {
         if save_last {
             self.save_last_png(&context);
         }
+        if annotate_last {
+            self.start_annotation(&context);
+        }
+        if pin_last {
+            if let (Some(frame), Some(texture)) = (&self.last_capture, &self.last_capture_texture) {
+                self.pinned_capture = Some(PinnedCapture {
+                    texture: texture.clone(),
+                    width: frame.width,
+                    height: frame.height,
+                });
+                self.status = "Latest capture pinned above other windows".into();
+            }
+        }
+        if unpin {
+            self.pinned_capture = None;
+            context.send_viewport_cmd_to(
+                egui::ViewportId::from_hash_of("proofsnip-pin"),
+                egui::ViewportCommand::Close,
+            );
+        }
+        if let Some(enabled) = startup_change {
+            match startup::set_enabled(enabled) {
+                Ok(()) => {
+                    self.status = if enabled {
+                        "ProofSnip will start with Windows".into()
+                    } else {
+                        "ProofSnip removed from Windows startup".into()
+                    };
+                }
+                Err(error) => {
+                    self.startup_enabled = !enabled;
+                    self.status = error;
+                }
+            }
+        }
         if let Some((index, direction)) = reorder {
             if direction < 0 {
                 self.session.move_up(index);
@@ -895,20 +1289,234 @@ impl ProofSnipApp {
             })
             .expect("failed to start PDF worker");
     }
+
+    fn render_pinned_capture(&mut self, context: &egui::Context) {
+        let Some(pinned) = self.pinned_capture.clone() else {
+            return;
+        };
+        let viewport_id = egui::ViewportId::from_hash_of("proofsnip-pin");
+        let max_width = 900.0_f32;
+        let max_height = 700.0_f32;
+        let scale = (max_width / pinned.width as f32)
+            .min(max_height / pinned.height as f32)
+            .min(1.0);
+        let image_size = egui::vec2(pinned.width as f32 * scale, pinned.height as f32 * scale);
+        let viewport_size = image_size + egui::vec2(16.0, 16.0);
+        let close_requested = context.show_viewport_immediate(
+            viewport_id,
+            egui::ViewportBuilder::default()
+                .with_title("ProofSnip Pin")
+                .with_inner_size(viewport_size)
+                .with_min_inner_size([180.0, 120.0])
+                .with_resizable(true)
+                .with_always_on_top(),
+            move |ui, _class| {
+                let close_requested = ui.input(|input| input.viewport().close_requested());
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(Color32::BLACK).inner_margin(8.0))
+                    .show(ui, |ui| {
+                        let available = ui.available_size();
+                        let fit = (available.x / pinned.width as f32)
+                            .min(available.y / pinned.height as f32)
+                            .min(1.0);
+                        ui.centered_and_justified(|ui| {
+                            ui.image((
+                                pinned.texture.id(),
+                                egui::vec2(pinned.width as f32 * fit, pinned.height as f32 * fit),
+                            ));
+                        });
+                    });
+                close_requested
+            },
+        );
+        if close_requested {
+            self.pinned_capture = None;
+        }
+    }
 }
 
 impl eframe::App for ProofSnipApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_hotkeys(context);
+        self.poll_tray(context);
         self.poll_workers();
+
+        if self.tray.is_some()
+            && !self.exit_requested
+            && context.input(|input| input.viewport().close_requested())
+        {
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            windows::hide_window();
+            self.status = "ProofSnip is still running in the notification area".into();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = ui.ctx().clone();
         match self.mode {
             AppMode::Workspace => self.render_workspace(ui),
             AppMode::Overlay => self.render_overlay(ui),
             AppMode::Note => self.render_note(ui),
             AppMode::Toast => self.render_toast(ui),
+            AppMode::Annotate => self.render_annotation(ui),
+        }
+        self.render_pinned_capture(&context);
+    }
+}
+
+fn annotation_tool_button(
+    ui: &mut egui::Ui,
+    selected: &mut AnnotationTool,
+    tool: AnnotationTool,
+    text: &str,
+) {
+    if ui.selectable_label(*selected == tool, text).clicked() {
+        *selected = tool;
+    }
+}
+
+fn annotation_for_drag(
+    tool: AnnotationTool,
+    start: AnnotationPoint,
+    end: AnnotationPoint,
+) -> Option<AnnotationItem> {
+    if start == end {
+        return None;
+    }
+    match tool {
+        AnnotationTool::Arrow => Some(AnnotationItem::Arrow {
+            start,
+            end,
+            thickness: 4,
+        }),
+        AnnotationTool::Rectangle => Some(AnnotationItem::Rectangle {
+            start,
+            end,
+            thickness: 4,
+        }),
+        AnnotationTool::Highlight => Some(AnnotationItem::Highlight { start, end }),
+        AnnotationTool::Redact => Some(AnnotationItem::Redact {
+            start,
+            end,
+            block_size: 12,
+        }),
+        AnnotationTool::Text | AnnotationTool::Marker => None,
+    }
+}
+
+fn ui_to_annotation(
+    position: egui::Pos2,
+    image_rect: egui::Rect,
+    width: u32,
+    height: u32,
+) -> AnnotationPoint {
+    let x = ((position.x - image_rect.left()) / image_rect.width() * width as f32)
+        .floor()
+        .clamp(0.0, width.saturating_sub(1) as f32) as i32;
+    let y = ((position.y - image_rect.top()) / image_rect.height() * height as f32)
+        .floor()
+        .clamp(0.0, height.saturating_sub(1) as f32) as i32;
+    AnnotationPoint::new(x, y)
+}
+
+fn annotation_to_ui(
+    point: AnnotationPoint,
+    image_rect: egui::Rect,
+    width: u32,
+    height: u32,
+) -> egui::Pos2 {
+    egui::pos2(
+        image_rect.left() + point.x as f32 / width.max(1) as f32 * image_rect.width(),
+        image_rect.top() + point.y as f32 / height.max(1) as f32 * image_rect.height(),
+    )
+}
+
+fn paint_annotation(
+    painter: &egui::Painter,
+    item: &AnnotationItem,
+    image_rect: egui::Rect,
+    width: u32,
+    height: u32,
+) {
+    let red = Color32::from_rgb(230, 32, 32);
+    let blue = Color32::from_rgb(35, 105, 220);
+    let point = |point| annotation_to_ui(point, image_rect, width, height);
+    match item {
+        AnnotationItem::Arrow {
+            start,
+            end,
+            thickness,
+        } => {
+            let start = point(*start);
+            let end = point(*end);
+            let stroke = Stroke::new(*thickness as f32, red);
+            painter.line_segment([start, end], stroke);
+            let vector = start - end;
+            let length = vector.length();
+            if length > 0.0 {
+                let direction = vector / length;
+                let perpendicular = egui::vec2(-direction.y, direction.x);
+                let head = (length * 0.25).clamp(12.0, 28.0);
+                painter.line_segment(
+                    [end, end + direction * head + perpendicular * head * 0.5],
+                    stroke,
+                );
+                painter.line_segment(
+                    [end, end + direction * head - perpendicular * head * 0.5],
+                    stroke,
+                );
+            }
+        }
+        AnnotationItem::Rectangle {
+            start,
+            end,
+            thickness,
+        } => {
+            painter.rect_stroke(
+                egui::Rect::from_two_pos(point(*start), point(*end)),
+                CornerRadius::ZERO,
+                Stroke::new(*thickness as f32, red),
+                StrokeKind::Inside,
+            );
+        }
+        AnnotationItem::Highlight { start, end } => {
+            painter.rect_filled(
+                egui::Rect::from_two_pos(point(*start), point(*end)),
+                CornerRadius::ZERO,
+                Color32::from_rgba_unmultiplied(255, 230, 0, 96),
+            );
+        }
+        AnnotationItem::Text {
+            position,
+            text,
+            size,
+        } => {
+            painter.text(
+                point(*position),
+                egui::Align2::LEFT_TOP,
+                text,
+                egui::FontId::proportional(*size as f32),
+                Color32::WHITE,
+            );
+        }
+        AnnotationItem::Redact { start, end, .. } => {
+            painter.rect_filled(
+                egui::Rect::from_two_pos(point(*start), point(*end)),
+                CornerRadius::ZERO,
+                Color32::from_black_alpha(190),
+            );
+        }
+        AnnotationItem::Marker { center, number } => {
+            let center = point(*center);
+            painter.circle_filled(center, 14.0, blue);
+            painter.circle_stroke(center, 14.0, Stroke::new(1.5, Color32::WHITE));
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                number,
+                egui::FontId::proportional(13.0),
+                Color32::WHITE,
+            );
         }
     }
 }

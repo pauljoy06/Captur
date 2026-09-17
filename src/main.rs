@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod annotations;
 mod capture;
 mod evidence;
 mod export;
@@ -16,12 +17,14 @@ mod ui;
 #[cfg(target_os = "windows")]
 fn main() -> eframe::Result<()> {
     platform::windows::configure_process()?;
+    let start_hidden = std::env::args_os().any(|argument| argument == "--background");
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title(platform::windows::WINDOW_TITLE)
             .with_inner_size([440.0, 620.0])
             .with_min_inner_size([360.0, 420.0])
+            .with_visible(!start_hidden)
             .with_resizable(true),
         ..Default::default()
     };
