@@ -227,11 +227,12 @@ impl Canvas<'_> {
         } else {
             let a = alpha as u16;
             let inverse = 255 - a;
-            for channel in 0..3 {
-                self.pixels[offset + channel] = ((color[channel] as u16 * a
-                    + self.pixels[offset + channel] as u16 * inverse
-                    + 127)
-                    / 255) as u8;
+            for (destination, source) in self.pixels[offset..offset + 3]
+                .iter_mut()
+                .zip(color[..3].iter())
+            {
+                *destination =
+                    ((*source as u16 * a + *destination as u16 * inverse + 127) / 255) as u8;
             }
             self.pixels[offset + 3] = 255;
         }
@@ -326,8 +327,10 @@ impl Canvas<'_> {
                 for y in by..block_bottom {
                     for x in bx..block_right {
                         let offset = y * self.stride + x * 4;
-                        for channel in 0..3 {
-                            sums[channel] += self.pixels[offset + channel] as u64;
+                        for (sum, value) in
+                            sums.iter_mut().zip(self.pixels[offset..offset + 3].iter())
+                        {
+                            *sum += *value as u64;
                         }
                     }
                 }

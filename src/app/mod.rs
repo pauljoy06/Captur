@@ -454,13 +454,12 @@ impl ProofSnipApp {
                 }
             });
 
-        if released {
-            if let (Some(start), Some(end)) = (self.selection_start, cursor.or(self.selection_end))
-            {
-                let selected = PixelRect::from_points(start, end).clamp_to(native_bounds);
-                if !selected.is_empty() && selected.width() > 1 && selected.height() > 1 {
-                    self.finish_selection(&context, selected);
-                }
+        if released
+            && let (Some(start), Some(end)) = (self.selection_start, cursor.or(self.selection_end))
+        {
+            let selected = PixelRect::from_points(start, end).clamp_to(native_bounds);
+            if !selected.is_empty() && selected.width() > 1 && selected.height() > 1 {
+                self.finish_selection(&context, selected);
             }
         }
         context.request_repaint_after(Duration::from_millis(8));
@@ -772,8 +771,7 @@ impl ProofSnipApp {
                 let available = ui.available_size();
                 let scale = (available.x / image_width as f32)
                     .min(available.y / image_height as f32)
-                    .min(1.0)
-                    .max(0.01);
+                    .clamp(0.01, 1.0);
                 let image_size =
                     egui::vec2(image_width as f32 * scale, image_height as f32 * scale);
                 ui.centered_and_justified(|ui| {
@@ -792,33 +790,32 @@ impl ProofSnipApp {
                                 ui_to_annotation(position, image_rect, image_width, image_height)
                             });
                     }
-                    if response.drag_stopped() {
-                        if let (Some(start), Some(position)) = (
+                    if response.drag_stopped()
+                        && let (Some(start), Some(position)) = (
                             self.annotation_drag_start.take(),
                             response.interact_pointer_pos(),
-                        ) {
-                            let end =
-                                ui_to_annotation(position, image_rect, image_width, image_height);
-                            self.add_drag_annotation(start, end);
-                        }
+                        )
+                    {
+                        let end = ui_to_annotation(position, image_rect, image_width, image_height);
+                        self.add_drag_annotation(start, end);
                     }
-                    if response.clicked() {
-                        if let Some(position) = response.interact_pointer_pos() {
-                            let point =
-                                ui_to_annotation(position, image_rect, image_width, image_height);
-                            match self.annotation_tool {
-                                AnnotationTool::Marker => {
-                                    self.annotation_document.add_marker(point);
-                                }
-                                AnnotationTool::Text if !self.annotation_text.trim().is_empty() => {
-                                    self.annotation_document.add_item(AnnotationItem::Text {
-                                        position: point,
-                                        text: self.annotation_text.trim().to_owned(),
-                                        size: 24,
-                                    });
-                                }
-                                _ => {}
+                    if response.clicked()
+                        && let Some(position) = response.interact_pointer_pos()
+                    {
+                        let point =
+                            ui_to_annotation(position, image_rect, image_width, image_height);
+                        match self.annotation_tool {
+                            AnnotationTool::Marker => {
+                                self.annotation_document.add_marker(point);
                             }
+                            AnnotationTool::Text if !self.annotation_text.trim().is_empty() => {
+                                self.annotation_document.add_item(AnnotationItem::Text {
+                                    position: point,
+                                    text: self.annotation_text.trim().to_owned(),
+                                    size: 24,
+                                });
+                            }
+                            _ => {}
                         }
                     }
 
@@ -1164,11 +1161,9 @@ impl ProofSnipApp {
         if let Some(action) = capture_request {
             self.begin_capture(&context, action, None);
         }
-        if add_last {
-            if let Some(frame) = self.last_capture.clone() {
-                self.add_evidence_frame(&context, frame, String::new());
-                self.status = "Latest capture added to evidence".into();
-            }
+        if add_last && let Some(frame) = self.last_capture.clone() {
+            self.add_evidence_frame(&context, frame, String::new());
+            self.status = "Latest capture added to evidence".into();
         }
         if save_last {
             self.save_last_png(&context);
@@ -1176,15 +1171,15 @@ impl ProofSnipApp {
         if annotate_last {
             self.start_annotation(&context);
         }
-        if pin_last {
-            if let (Some(frame), Some(texture)) = (&self.last_capture, &self.last_capture_texture) {
-                self.pinned_capture = Some(PinnedCapture {
-                    texture: texture.clone(),
-                    width: frame.width,
-                    height: frame.height,
-                });
-                self.status = "Latest capture pinned above other windows".into();
-            }
+        if pin_last
+            && let (Some(frame), Some(texture)) = (&self.last_capture, &self.last_capture_texture)
+        {
+            self.pinned_capture = Some(PinnedCapture {
+                texture: texture.clone(),
+                width: frame.width,
+                height: frame.height,
+            });
+            self.status = "Latest capture pinned above other windows".into();
         }
         if unpin {
             self.pinned_capture = None;

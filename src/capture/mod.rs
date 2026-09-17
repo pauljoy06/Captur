@@ -60,9 +60,11 @@ impl BgraFrame {
         let mut rgba = Vec::with_capacity(self.width as usize * self.height as usize * 4);
         for row in 0..self.height as usize {
             let row_start = row * self.stride;
-            for bgra in self.pixels[row_start..row_start + self.width as usize * 4].chunks_exact(4)
-            {
-                rgba.extend_from_slice(&[bgra[2], bgra[1], bgra[0], 255]);
+            let (pixels, remainder) =
+                self.pixels[row_start..row_start + self.width as usize * 4].as_chunks::<4>();
+            debug_assert!(remainder.is_empty());
+            for [blue, green, red, _alpha] in pixels {
+                rgba.extend_from_slice(&[*red, *green, *blue, 255]);
             }
         }
         egui::ColorImage::from_rgba_unmultiplied([self.width as usize, self.height as usize], &rgba)

@@ -302,10 +302,10 @@ fn wrap_text(value: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
             line.push_str(word);
         }
     }
-    if let Some(last) = lines.last_mut() {
-        if last.chars().count() > max_chars {
-            *last = truncate_line(last, max_chars);
-        }
+    if let Some(last) = lines.last_mut()
+        && last.chars().count() > max_chars
+    {
+        *last = truncate_line(last, max_chars);
     }
     lines
 }
