@@ -16,6 +16,12 @@ using System.Text;
 public static class CapturUxNative {
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct NOTIFYICONIDENTIFIER {
+        public uint cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public Guid guidItem;
+    }
     public delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
 
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
@@ -33,6 +39,7 @@ public static class CapturUxNative {
     [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+    [DllImport("shell32.dll")] public static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
 
     public static IntPtr FindWindow(uint processId, string title, string className, bool visibleOnly) {
         IntPtr result = IntPtr.Zero;
@@ -249,6 +256,35 @@ try {
     $tray = [CapturUxNative]::FindWindow([uint32]$process.Id, 'Captur Tray', 'CapturTrayWindow', $false)
     if ($tray -eq [IntPtr]::Zero) { throw 'Captur tray window was not created' }
     $results.tray_window_created = $true
+
+    $associatedIcon = [Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path $ExePath).Path)
+    if ($null -eq $associatedIcon) { throw 'captur.exe did not expose an associated icon' }
+    $iconBitmap = $associatedIcon.ToBitmap()
+    $iconStream = New-Object IO.MemoryStream
+    $iconBitmap.Save($iconStream, [Drawing.Imaging.ImageFormat]::Png)
+    $iconSha = [Security.Cryptography.SHA256]::Create()
+    $iconHash = [BitConverter]::ToString($iconSha.ComputeHash($iconStream.ToArray())).Replace('-', '').ToLowerInvariant()
+    $results.executable_icon = [ordered]@{
+        width = $iconBitmap.Width
+        height = $iconBitmap.Height
+        sha256 = $iconHash
+    }
+    $iconSha.Dispose()
+    $iconStream.Dispose()
+    $iconBitmap.Dispose()
+    $associatedIcon.Dispose()
+
+    [CapturUxNative+NOTIFYICONIDENTIFIER]$trayIdentifier = New-Object CapturUxNative+NOTIFYICONIDENTIFIER
+    $trayIdentifier.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($trayIdentifier)
+    $trayIdentifier.hWnd = $tray
+    $trayIdentifier.uID = 1
+    [CapturUxNative+RECT]$trayRect = New-Object CapturUxNative+RECT
+    $trayResult = [CapturUxNative]::Shell_NotifyIconGetRect([ref]$trayIdentifier, [ref]$trayRect)
+    if ($trayResult -ne 0) { throw "Captur tray icon was not registered (HRESULT $trayResult)" }
+    $results.tray_icon = [ordered]@{
+        registered = $true
+        bounds = "$($trayRect.Left),$($trayRect.Top) $(($trayRect.Right-$trayRect.Left))x$(($trayRect.Bottom-$trayRect.Top))"
+    }
 
     Send-Chord 0x37
     Start-Sleep -Seconds 2

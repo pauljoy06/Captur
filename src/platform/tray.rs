@@ -16,7 +16,7 @@ use windows::{
             WindowsAndMessaging::{
                 AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
                 DestroyMenu, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos,
-                GetMessageW, GetWindowLongPtrW, IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW,
+                GetMessageW, GetWindowLongPtrW, HICON, IDC_ARROW, LoadCursorW, LoadIconW,
                 MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage, RegisterClassW, SetForegroundWindow,
                 SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
                 TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY,
@@ -29,6 +29,7 @@ use windows::{
 };
 
 const WINDOW_CLASS: PCWSTR = w!("CapturTrayWindow");
+const APP_ICON_RESOURCE_ID: usize = 1;
 const TRAY_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const MENU_SHOW: usize = 1;
@@ -97,11 +98,13 @@ fn run_tray_thread(
         let module = GetModuleHandleW(None)
             .map_err(|error| format!("could not get application module: {error}"))?;
         let instance = HINSTANCE(module.0);
+        let app_icon = load_app_icon(instance)?;
         let window_class = WNDCLASSW {
             hInstance: instance,
             lpszClassName: WINDOW_CLASS,
             lpfnWndProc: Some(window_proc),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            hIcon: app_icon,
             ..Default::default()
         };
 
@@ -143,7 +146,7 @@ fn run_tray_thread(
             }
         };
 
-        if let Err(error) = add_tray_icon(window) {
+        if let Err(error) = add_tray_icon(window, app_icon) {
             let _ = DestroyWindow(window);
             let _ = startup_sender.send(Err(error.clone()));
             return Err(error);
@@ -172,14 +175,21 @@ fn run_tray_thread(
     Ok(())
 }
 
-unsafe fn add_tray_icon(window: HWND) -> Result<(), String> {
+fn load_app_icon(instance: HINSTANCE) -> Result<HICON, String> {
+    let resource = PCWSTR(APP_ICON_RESOURCE_ID as *const u16);
+    // Safety: resource ID 1 is linked into the executable by build.rs and owned by the module.
+    unsafe { LoadIconW(Some(instance), resource) }
+        .map_err(|error| format!("could not load embedded Captur icon: {error}"))
+}
+
+unsafe fn add_tray_icon(window: HWND, app_icon: HICON) -> Result<(), String> {
     let mut data = NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: window,
         uID: TRAY_ID,
         uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
         uCallbackMessage: TRAY_MESSAGE,
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+        hIcon: app_icon,
         ..Default::default()
     };
     write_wide_buffer(&mut data.szTip, "Captur");

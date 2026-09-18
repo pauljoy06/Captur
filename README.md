@@ -20,6 +20,7 @@ Captur is a Windows 11 snipping and evidence-export application written in Rust.
 - Optional annotation workspace with Arrow, Rectangle, Highlight, Text, Blur/redact, and sequential number markers. The primary tools are keyboard accessible with `A`, `R`, `H`, `T`, `B`, `1`, `C`, `Enter`, and `Escape`.
 - Lightweight always-on-top pinned screenshot viewport for visual comparison.
 - Notification-area lifecycle with **Show Captur** and **Exit** actions. Closing the workspace keeps the resident capture process running.
+- One embedded multi-resolution Captur icon shared by the executable, taskbar window, and notification area.
 - Optional per-user Windows startup registration through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Login startup uses `--background`, so only the resident hotkeys and notification-area icon start initially.
 - Background direct PDF generation with A4/landscape layouts, embedded DejaVu Sans, aspect-ratio preservation, and tall-capture pagination.
 - Capture-path timing display for hotkey-to-overlay, desktop capture, crop, and mouse-release-to-clipboard.
@@ -48,6 +49,11 @@ src/
 └── ui/
     ├── theme.rs         Captur design tokens and dark visual system
     └── components.rs    reusable cards, buttons, badges, and status surfaces
+assets/
+├── captur.png           taskbar/window icon source
+├── captur.ico           multi-resolution Windows icon
+└── captur.rc            native executable resource declaration
+build.rs                 dependency-free Windows resource compilation
 ```
 
 The critical path is:
@@ -127,7 +133,7 @@ A repository under the WSL ext4 filesystem is exposed to Windows as `\\wsl.local
 
 At runtime, Captur needs Windows 11 with a D3D11-capable display adapter. There are no servers or external runtime processes. The production executable uses system DXGI, D3D11, WIC, clipboard, shell dialog, and User32 APIs.
 
-For the Windows-native build alternative, Visual Studio Build Tools and the Windows SDK must be installed from Windows. This cannot be usefully replaced by Linux packages. The `cargo-xwin` route avoids that Windows-side build prerequisite.
+For the Windows-native build alternative, Visual Studio Build Tools and the Windows SDK must be installed from Windows. The SDK's `rc.exe` embeds the application icon. This cannot be usefully replaced by Linux packages. The `cargo-xwin` route uses `llvm-rc` from the LLVM installation instead.
 
 ## Technical risks and current tradeoffs
 
