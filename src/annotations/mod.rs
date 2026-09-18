@@ -610,7 +610,14 @@ mod tests {
         assert_eq!(pixel(&rendered, 2, 2), RED);
         assert_ne!(pixel(&rendered, 28, 7), pixel(&source, 28, 7));
         assert_eq!(pixel(&rendered, 10, 24), RED);
-        assert!(rendered.pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        assert!(
+            rendered
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel[3] == 255)
+        );
     }
 
     #[test]

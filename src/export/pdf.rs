@@ -420,7 +420,7 @@ mod tests {
     fn solid_frame(width: u32, height: u32, bgra: [u8; 4]) -> BgraFrame {
         let stride = width as usize * 4;
         let mut pixels = vec![0_u8; stride * height as usize];
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&bgra);
         }
         BgraFrame {

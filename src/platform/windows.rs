@@ -1,3 +1,12 @@
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+
 use windows::{
     Win32::{
         Foundation::{HWND, POINT, RECT},
@@ -9,7 +18,7 @@ use windows::{
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
             WindowsAndMessaging::{
-                FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetForegroundWindow,
+                FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetForegroundWindow, GetPhysicalCursorPos,
                 GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_HIDE, SW_SHOW,
                 SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow,
                 SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -23,6 +32,43 @@ use windows::{
 use crate::capture::region::{PixelPoint, PixelRect};
 
 pub const WINDOW_TITLE: &str = "ProofSnip";
+
+pub struct OverlayBoundsGuard {
+    active: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl OverlayBoundsGuard {
+    pub fn start(bounds: PixelRect) -> Result<Self, String> {
+        let hwnd = app_window()?;
+        let raw_window = hwnd.0 as usize;
+        let active = Arc::new(AtomicBool::new(true));
+        let worker_active = active.clone();
+        let worker = thread::Builder::new()
+            .name("proofsnip-overlay-bounds".into())
+            .spawn(move || {
+                let hwnd = HWND(raw_window as *mut core::ffi::c_void);
+                while worker_active.load(Ordering::Acquire) {
+                    let _ = ensure_overlay_bounds_for(hwnd, bounds);
+                    thread::sleep(Duration::from_millis(4));
+                }
+            })
+            .map_err(|error| format!("could not start overlay bounds guard: {error}"))?;
+        Ok(Self {
+            active,
+            worker: Some(worker),
+        })
+    }
+}
+
+impl Drop for OverlayBoundsGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
 
 pub fn configure_process() -> eframe::Result<()> {
     // Safety: process DPI awareness is configured before eframe creates a window. COM is kept
@@ -69,6 +115,36 @@ pub fn show_overlay(bounds: PixelRect) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_overlay_bounds(bounds: PixelRect) -> Result<(), String> {
+    ensure_overlay_bounds_for(app_window()?, bounds)
+}
+
+fn ensure_overlay_bounds_for(hwnd: HWND, bounds: PixelRect) -> Result<(), String> {
+    let mut current = RECT::default();
+    unsafe {
+        GetWindowRect(hwnd, &mut current)
+            .map_err(|error| format!("could not query capture-overlay bounds: {error}"))?;
+        if current.left == bounds.left
+            && current.top == bounds.top
+            && current.right == bounds.right
+            && current.bottom == bounds.bottom
+        {
+            return Ok(());
+        }
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            bounds.left,
+            bounds.top,
+            bounds.width() as i32,
+            bounds.height() as i32,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| format!("could not maintain capture-overlay bounds: {error}"))?;
+    }
+    Ok(())
+}
+
 pub fn hide_window() {
     if let Ok(hwnd) = app_window() {
         // Safety: hwnd is our top-level eframe window.
@@ -76,6 +152,10 @@ pub fn hide_window() {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
+}
+
+pub fn is_workspace_visible() -> bool {
+    app_window().is_ok_and(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() })
 }
 
 pub fn hide_for_capture() -> Result<(), String> {
@@ -157,7 +237,7 @@ fn show_compact_window(
 pub fn cursor_position() -> Option<PixelPoint> {
     let mut point = POINT::default();
     // Safety: point is a valid out pointer.
-    unsafe { GetCursorPos(&mut point).ok()? };
+    unsafe { GetPhysicalCursorPos(&mut point).ok()? };
     Some(PixelPoint {
         x: point.x,
         y: point.y,

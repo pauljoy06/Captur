@@ -57,6 +57,8 @@ mouse release → native crop → CF_DIBV5 clipboard → confirmation
 
 WIC compression, disk writes, session JSON, and PDF generation are never required before the clipboard is populated.
 
+DXGI devices and Desktop Duplication objects are initialized once and retained on the UI thread. Each output keeps its latest completed frame so an unchanged desktop does not turn a short duplication timeout into a failed snip. Access-loss and other duplication failures discard the engine and rebuild it once before the capture is reported as failed.
+
 ## Build from WSL2 with the Windows MSVC target
 
 ### Recommended: `cargo-xwin`
@@ -127,11 +129,11 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 
 ## Technical risks and current tradeoffs
 
-- **DXGI lifecycle:** the first implementation recreates duplication objects for each snapshot. This is simpler and recovers naturally from display changes, but device creation is included in hotkey-to-overlay latency. The timing panel determines whether persistent per-adapter duplication objects are worth the added reset and device-loss handling.
+- **DXGI lifecycle:** ProofSnip retains one duplication object per attached output to keep repeated captures responsive. Any acquisition failure rebuilds the complete engine once, which also picks up monitor and adapter changes. Display changes and secure-desktop transitions can still make that individual capture fail after the retry.
 - **Mixed-DPI overlay:** the process is per-monitor-v2 aware and all selection/crop geometry uses physical pixels, including negative virtual-desktop coordinates. A single HWND spanning monitors with different scale factors still requires real Windows hardware validation because winit/egui controls the rendering scale for that HWND.
 - **Capture freshness:** ProofSnip hides its window and calls `DwmFlush` before acquiring a frame. Desktop Duplication can still return timeout or access-lost errors during display changes, secure-desktop transitions, or device resets. Those errors are reported and the next capture creates fresh DXGI state.
 - **PDF memory:** export consumes an immutable session snapshot and raw BGRA images on a worker thread. This preserves screenshot quality and capture responsiveness, but a session containing many 4K screenshots can temporarily use substantial memory while the PDF is assembled.
-- **WSL boundary:** compilation is validated in WSL with the MSVC target and `cargo-xwin`. Actual global-hotkey, clipboard, mixed-DPI, GPU, and paste behavior must be exercised in an interactive Windows desktop session.
+- **WSL boundary:** compilation is validated in WSL with the MSVC target and `cargo-xwin`. Global hotkeys, DXGI, clipboard, native dialogs, tray behavior, and PDF export have also been exercised by the Windows acceptance scripts. A post-fix mixed-DPI, two-monitor run remains a manual hardware check because the final validation session exposed one 1920×1200 monitor.
 - **Secondary egui viewports:** pinned screenshots use egui's immediate native viewport support. Always-on-top behavior, resizing, and close handling should be checked against the installed Windows graphics driver and desktop configuration.
 - **Annotation cost:** annotations are previewed as egui vector shapes, then rasterized into a BGRA frame only when copied or completed. Text rasterization uses isolated GDI calls through windows-rs. This work is outside the snipping critical path.
 - **eframe internals:** ProofSnip does not directly depend on or use `arboard`, `image`, or `png` for screenshot capture or encoding. The required eframe 0.36 native integration currently enables those crates transitively for its own clipboard/icon support and does not expose a feature to disable them. ProofSnip's capture clipboard remains the native `CF_DIBV5` implementation and WIC remains its only PNG encoder.
@@ -154,11 +156,57 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 
 The workspace performance card reports the first-order latency measurements. Validate mixed-DPI layouts with monitors at different Windows scale factors and with a monitor positioned left or above the primary display.
 
+## Observed Windows acceptance results
+
+The packaged release executable was exercised on Windows 11 through its real global hotkeys, native mouse input, DXGI capture, `CF_DIBV5` clipboard path, egui workspace, COM save dialog, tray window, and current-user Run key. The latest measured run observed:
+
+| Workflow | Observed result |
+| --- | ---: |
+| Cold process start to resident window | 2105 ms |
+| Region hotkey to full 1920×1200 overlay | 130 ms |
+| Region mouse release to clipboard bitmap | 145 ms |
+| Same-region hotkey to clipboard | 247 ms |
+| Full-monitor hotkey to clipboard | 333 ms |
+| Active-window hotkey to clipboard | 180 ms |
+| Escape to hidden resident state | 206 ms |
+| Two-capture evidence export after save-dialog action | 2102 ms |
+
+The final evidence run produced a 411,964-byte, two-page A4 PDF. Extracted document text confirmed the session title, reordered `After`/`Before` labels, both captions, and generated timestamps. A real native **Save PNG** action also produced a valid 1920×1200 RGBA PNG through WIC. The UX run confirmed that a numbered annotation changed screenshot pixels without changing its 1920×1200 dimensions, the pin viewport had the topmost extended style, the startup checkbox changed and restored the Run value, closing kept the process resident, the tray reopened the workspace, and tray Exit stopped it.
+
+These are development measurements, not performance guarantees. The automated mouse coordinates assume ProofSnip's intentionally normalized 1120×760 evidence workspace. Run the scripts only in a disposable interactive desktop session because they temporarily move the cursor, use the clipboard, open windows, and toggle ProofSnip's own startup value. Each script restores the state it changes in a `finally` block.
+
+From WSL, copy the release executable and scripts to a Windows-local temporary folder before running them. This avoids occasional PowerShell/COM stalls when a script itself is loaded from a `\\wsl.localhost` UNC path:
+
+```bash
+mkdir -p /mnt/c/Temp/ProofSnipAcceptance
+cp target/x86_64-pc-windows-msvc/release/proofsnip.exe \
+  /mnt/c/Temp/ProofSnipAcceptance/
+cp scripts/windows-*-acceptance.ps1 /mnt/c/Temp/ProofSnipAcceptance/
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+  'C:\Temp\ProofSnipAcceptance\windows-capture-acceptance.ps1' \
+  -ExePath 'C:\Temp\ProofSnipAcceptance\proofsnip.exe' \
+  -ResultPath 'C:\Temp\ProofSnipAcceptance\capture.json'
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+  'C:\Temp\ProofSnipAcceptance\windows-evidence-acceptance.ps1' \
+  -ExePath 'C:\Temp\ProofSnipAcceptance\proofsnip.exe' \
+  -PdfPath 'C:\Temp\ProofSnipAcceptance\evidence.pdf' \
+  -ResultPath 'C:\Temp\ProofSnipAcceptance\evidence.json' \
+  -ScreenshotPath 'C:\Temp\ProofSnipAcceptance\evidence.png'
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+  'C:\Temp\ProofSnipAcceptance\windows-ux-acceptance.ps1' \
+  -ExePath 'C:\Temp\ProofSnipAcceptance\proofsnip.exe' \
+  -ResultPath 'C:\Temp\ProofSnipAcceptance\ux.json'
+```
+
 ## Development checks
 
 ```bash
 cargo fmt --check
 cargo check --target x86_64-pc-windows-msvc
+cargo clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 cargo test                 # pure model/layout tests when run on a host configuration that excludes Win32-only modules
 cargo xwin build --release --target x86_64-pc-windows-msvc
 ```

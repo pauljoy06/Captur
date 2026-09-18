@@ -1,4 +1,4 @@
-use std::{slice, sync::Arc};
+use std::{cell::RefCell, slice, sync::Arc};
 
 use windows::{
     Win32::{
@@ -17,8 +17,9 @@ use windows::{
                     DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180,
                     DXGI_MODE_ROTATION_ROTATE270,
                 },
-                CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1,
-                IDXGIFactory1, IDXGIOutput1, IDXGIResource,
+                CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
+                DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1,
+                IDXGIOutputDuplication, IDXGIResource,
             },
         },
     },
@@ -27,78 +28,131 @@ use windows::{
 
 use super::{BgraFrame, region::PixelRect};
 
-pub fn capture_desktop() -> Result<BgraFrame, String> {
-    // Safety: all COM interfaces are owned RAII values. Mapped pointers are copied before Unmap,
-    // and every acquired duplication frame is released before the interface is dropped.
-    unsafe {
-        capture_desktop_inner().map_err(|error| format!("desktop duplication failed: {error}"))
-    }
+thread_local! {
+    static CAPTURE_ENGINE: RefCell<Option<CaptureEngine>> = const { RefCell::new(None) };
 }
 
-unsafe fn capture_desktop_inner() -> windows::core::Result<BgraFrame> {
-    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
-    let mut captures = Vec::new();
-    let mut adapter_index = 0;
-
-    loop {
-        let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
-            Ok(adapter) => adapter,
-            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
-            Err(error) => return Err(error),
-        };
-        captures.extend(unsafe { capture_adapter_outputs(&adapter)? });
-        adapter_index += 1;
-    }
-
-    if captures.is_empty() {
-        return Err(windows::core::Error::new(
-            windows::core::HRESULT(0x8000_4005_u32 as i32),
-            "no attached desktop outputs were available",
-        ));
-    }
-
-    let bounds = captures.iter().fold(
-        PixelRect {
-            left: i32::MAX,
-            top: i32::MAX,
-            right: i32::MIN,
-            bottom: i32::MIN,
-        },
-        |mut bounds, capture| {
-            bounds.left = bounds.left.min(capture.rect.left);
-            bounds.top = bounds.top.min(capture.rect.top);
-            bounds.right = bounds.right.max(capture.rect.right);
-            bounds.bottom = bounds.bottom.max(capture.rect.bottom);
-            bounds
-        },
-    );
-
-    let width = bounds.width();
-    let height = bounds.height();
-    let stride = width as usize * 4;
-    let mut pixels = vec![0_u8; stride * height as usize];
-
-    for capture in captures {
-        let x = (capture.rect.left - bounds.left) as usize;
-        let y = (capture.rect.top - bounds.top) as usize;
-        for row in 0..capture.height as usize {
-            let src = row * capture.stride;
-            let dst = (y + row) * stride + x * 4;
-            let len = capture.width as usize * 4;
-            pixels[dst..dst + len].copy_from_slice(&capture.pixels[src..src + len]);
+pub fn initialize() -> Result<(), String> {
+    CAPTURE_ENGINE.with(|engine| {
+        let mut engine = engine.borrow_mut();
+        if engine.is_none() {
+            *engine = Some(unsafe { CaptureEngine::new() }.map_err(capture_error)?);
         }
-    }
-
-    Ok(BgraFrame {
-        origin_x: bounds.left,
-        origin_y: bounds.top,
-        width,
-        height,
-        stride,
-        pixels: Arc::from(pixels),
+        Ok(())
     })
 }
 
+pub fn capture_desktop() -> Result<BgraFrame, String> {
+    // Safety: all COM interfaces are owned RAII values. Mapped pointers are copied before Unmap,
+    // and every acquired duplication frame is released before the interface is dropped.
+    CAPTURE_ENGINE.with(|engine| {
+        let mut engine = engine.borrow_mut();
+        if engine.is_none() {
+            *engine = Some(unsafe { CaptureEngine::new() }.map_err(capture_error)?);
+        }
+
+        let first = unsafe {
+            engine
+                .as_mut()
+                .expect("capture engine initialized")
+                .capture()
+        };
+        match first {
+            Ok(frame) => Ok(frame),
+            Err(_) => {
+                *engine = None;
+                *engine = Some(unsafe { CaptureEngine::new() }.map_err(capture_error)?);
+                unsafe { engine.as_mut().expect("capture engine rebuilt").capture() }
+                    .map_err(capture_error)
+            }
+        }
+    })
+}
+
+fn capture_error(error: windows::core::Error) -> String {
+    format!("desktop duplication failed: {error}")
+}
+
+struct CaptureEngine {
+    outputs: Vec<OutputDuplicator>,
+    bounds: PixelRect,
+}
+
+impl CaptureEngine {
+    unsafe fn new() -> windows::core::Result<Self> {
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
+        let mut outputs = Vec::new();
+        let mut adapter_index = 0;
+
+        loop {
+            let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(error),
+            };
+            outputs.extend(unsafe { create_adapter_outputs(&adapter)? });
+            adapter_index += 1;
+        }
+
+        if outputs.is_empty() {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x8000_4005_u32 as i32),
+                "no attached desktop outputs were available",
+            ));
+        }
+
+        let bounds = outputs.iter().fold(
+            PixelRect {
+                left: i32::MAX,
+                top: i32::MAX,
+                right: i32::MIN,
+                bottom: i32::MIN,
+            },
+            |mut bounds, output| {
+                bounds.left = bounds.left.min(output.rect.left);
+                bounds.top = bounds.top.min(output.rect.top);
+                bounds.right = bounds.right.max(output.rect.right);
+                bounds.bottom = bounds.bottom.max(output.rect.bottom);
+                bounds
+            },
+        );
+        Ok(Self { outputs, bounds })
+    }
+
+    unsafe fn capture(&mut self) -> windows::core::Result<BgraFrame> {
+        let mut captures = Vec::with_capacity(self.outputs.len());
+        for output in &mut self.outputs {
+            captures.push(unsafe { output.capture()? });
+        }
+
+        let width = self.bounds.width();
+        let height = self.bounds.height();
+        let stride = width as usize * 4;
+        let mut pixels = vec![0_u8; stride * height as usize];
+
+        for capture in captures {
+            let x = (capture.rect.left - self.bounds.left) as usize;
+            let y = (capture.rect.top - self.bounds.top) as usize;
+            for row in 0..capture.height as usize {
+                let src = row * capture.stride;
+                let dst = (y + row) * stride + x * 4;
+                let len = capture.width as usize * 4;
+                pixels[dst..dst + len].copy_from_slice(&capture.pixels[src..src + len]);
+            }
+        }
+
+        Ok(BgraFrame {
+            origin_x: self.bounds.left,
+            origin_y: self.bounds.top,
+            width,
+            height,
+            stride,
+            pixels: Arc::from(pixels),
+        })
+    }
+}
+
+#[derive(Clone)]
 struct OutputCapture {
     rect: PixelRect,
     width: u32,
@@ -107,9 +161,59 @@ struct OutputCapture {
     pixels: Vec<u8>,
 }
 
-unsafe fn capture_adapter_outputs(
+struct OutputDuplicator {
+    rect: PixelRect,
+    rotation: windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION,
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    duplication: IDXGIOutputDuplication,
+    latest: Option<OutputCapture>,
+}
+
+impl OutputDuplicator {
+    unsafe fn capture(&mut self) -> windows::core::Result<OutputCapture> {
+        let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut desktop_resource: Option<IDXGIResource> = None;
+        let timeout_ms = if self.latest.is_some() { 32 } else { 500 };
+        if let Err(error) = unsafe {
+            self.duplication
+                .AcquireNextFrame(timeout_ms, &mut frame_info, &mut desktop_resource)
+        } {
+            if error.code() == DXGI_ERROR_WAIT_TIMEOUT
+                && let Some(latest) = self.latest.clone()
+            {
+                return Ok(latest);
+            }
+            return Err(error);
+        }
+
+        let capture_result = (|| unsafe {
+            let resource = desktop_resource.ok_or_else(|| {
+                windows::core::Error::new(
+                    windows::core::HRESULT(0x8000_4005_u32 as i32),
+                    "desktop duplication returned no resource",
+                )
+            })?;
+            let texture: ID3D11Texture2D = resource.cast()?;
+            read_texture(
+                &self.device,
+                &self.context,
+                &texture,
+                self.rotation,
+                self.rect,
+            )
+        })();
+        let release_result = unsafe { self.duplication.ReleaseFrame() };
+        let capture = capture_result?;
+        release_result?;
+        self.latest = Some(capture.clone());
+        Ok(capture)
+    }
+}
+
+unsafe fn create_adapter_outputs(
     adapter: &IDXGIAdapter1,
-) -> windows::core::Result<Vec<OutputCapture>> {
+) -> windows::core::Result<Vec<OutputDuplicator>> {
     let (device, context) = unsafe { create_device(adapter)? };
     let mut captures = Vec::new();
     let mut output_index = 0;
@@ -128,36 +232,19 @@ unsafe fn capture_adapter_outputs(
         }
 
         let output1: IDXGIOutput1 = output.cast()?;
-        let duplication = unsafe { output1.DuplicateOutput(&device)? };
-        let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
-        let mut desktop_resource: Option<IDXGIResource> = None;
-        unsafe { duplication.AcquireNextFrame(500, &mut frame_info, &mut desktop_resource)? };
-
-        let capture_result = (|| unsafe {
-            let resource = desktop_resource.ok_or_else(|| {
-                windows::core::Error::new(
-                    windows::core::HRESULT(0x8000_4005_u32 as i32),
-                    "desktop duplication returned no resource",
-                )
-            })?;
-            let texture: ID3D11Texture2D = resource.cast()?;
-            read_texture(
-                &device,
-                &context,
-                &texture,
-                desc.Rotation,
-                PixelRect {
-                    left: desc.DesktopCoordinates.left,
-                    top: desc.DesktopCoordinates.top,
-                    right: desc.DesktopCoordinates.right,
-                    bottom: desc.DesktopCoordinates.bottom,
-                },
-            )
-        })();
-
-        let release_result = unsafe { duplication.ReleaseFrame() };
-        captures.push(capture_result?);
-        release_result?;
+        captures.push(OutputDuplicator {
+            rect: PixelRect {
+                left: desc.DesktopCoordinates.left,
+                top: desc.DesktopCoordinates.top,
+                right: desc.DesktopCoordinates.right,
+                bottom: desc.DesktopCoordinates.bottom,
+            },
+            rotation: desc.Rotation,
+            device: device.clone(),
+            context: context.clone(),
+            duplication: unsafe { output1.DuplicateOutput(&device)? },
+            latest: None,
+        });
     }
 
     Ok(captures)

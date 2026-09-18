@@ -105,15 +105,18 @@ pub struct ProofSnipApp {
     annotation_tool: AnnotationTool,
     annotation_drag_start: Option<AnnotationPoint>,
     annotation_text: String,
+    workspace_was_visible_before_capture: bool,
+    overlay_bounds_guard: Option<windows::OverlayBoundsGuard>,
 }
 
 impl ProofSnipApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+        let capture_initialization_error = dxgi::initialize().err();
         let hotkeys = HotkeyReceiver::start(cc.egui_ctx.clone());
         let (worker_sender, worker_receiver) = mpsc::channel();
         let startup_enabled = startup::is_enabled().unwrap_or(false);
-        let (tray, status) = match TrayReceiver::start(cc.egui_ctx.clone()) {
+        let (tray, mut status) = match TrayReceiver::start(cc.egui_ctx.clone()) {
             Ok(tray) => (
                 Some(tray),
                 "Ready · Ctrl+Shift+4 captures a region".to_owned(),
@@ -123,6 +126,9 @@ impl ProofSnipApp {
                 format!("Ready · notification area unavailable: {error}"),
             ),
         };
+        if let Some(error) = capture_initialization_error {
+            status = format!("Capture initialization will retry on first use: {error}");
+        }
         Self {
             mode: AppMode::Workspace,
             hotkeys,
@@ -157,6 +163,8 @@ impl ProofSnipApp {
             annotation_tool: AnnotationTool::Arrow,
             annotation_drag_start: None,
             annotation_text: String::new(),
+            workspace_was_visible_before_capture: false,
+            overlay_bounds_guard: None,
         }
     }
 
@@ -165,6 +173,7 @@ impl ProofSnipApp {
             match event {
                 TrayEvent::ShowWorkspace => {
                     self.mode = AppMode::Workspace;
+                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     if let Err(error) = windows::show_workspace() {
                         self.status = error;
                     }
@@ -194,6 +203,7 @@ impl ProofSnipApp {
                 },
                 Ok(HotkeyEvent::ShowWorkspace) => {
                     self.mode = AppMode::Workspace;
+                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     if let Err(error) = windows::show_workspace() {
                         self.status = error;
                     }
@@ -246,6 +256,7 @@ impl ProofSnipApp {
         action: CaptureAction,
         hotkey_received: Option<Instant>,
     ) {
+        self.workspace_was_visible_before_capture = windows::is_workspace_visible();
         if let Err(error) = windows::hide_for_capture() {
             self.status = error;
             return;
@@ -266,11 +277,21 @@ impl ProofSnipApp {
                 self.selection_end = None;
                 self.capture_action = action;
                 self.mode = AppMode::Overlay;
+                configure_overlay_viewport(context, bounds);
                 if let Err(error) = windows::show_overlay(bounds) {
                     self.status = error;
                     self.mode = AppMode::Workspace;
-                    let _ = windows::show_workspace();
+                    self.restore_after_capture_interruption();
                     return;
+                }
+                match windows::OverlayBoundsGuard::start(bounds) {
+                    Ok(guard) => self.overlay_bounds_guard = Some(guard),
+                    Err(error) => {
+                        self.status = error;
+                        self.mode = AppMode::Workspace;
+                        self.restore_after_capture_interruption();
+                        return;
+                    }
                 }
                 if let Some(started) = hotkey_received {
                     self.timings.hotkey_to_overlay = Some(started.elapsed());
@@ -280,7 +301,7 @@ impl ProofSnipApp {
             Err(error) => {
                 self.status = error;
                 self.mode = AppMode::Workspace;
-                let _ = windows::show_workspace();
+                self.restore_after_capture_interruption();
             }
         }
     }
@@ -289,10 +310,12 @@ impl ProofSnipApp {
         let Some(region) = self.last_region else {
             self.status = "No previous region is available yet".into();
             self.mode = AppMode::Workspace;
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             let _ = windows::show_workspace();
             return;
         };
 
+        self.workspace_was_visible_before_capture = windows::is_workspace_visible();
         if let Err(error) = windows::hide_for_capture() {
             self.status = error;
             return;
@@ -320,18 +343,20 @@ impl ProofSnipApp {
                 );
                 self.mode = AppMode::Toast;
                 self.toast_until = Some(Instant::now() + Duration::from_millis(650));
+                context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 let _ = windows::show_toast(region);
             }
             Err(error) => {
                 self.status = error;
                 self.mode = AppMode::Workspace;
-                let _ = windows::show_workspace();
+                self.restore_after_capture_interruption();
             }
         }
     }
 
     fn capture_rect(&mut self, context: &egui::Context, rect: PixelRect, kind: &str) {
         let started = Instant::now();
+        self.workspace_was_visible_before_capture = windows::is_workspace_visible();
         if let Err(error) = windows::hide_for_capture() {
             self.status = error;
             return;
@@ -365,12 +390,13 @@ impl ProofSnipApp {
                 self.record_timings();
                 self.mode = AppMode::Toast;
                 self.toast_until = Some(Instant::now() + Duration::from_millis(650));
+                context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 let _ = windows::show_toast(rect);
             }
             Err(error) => {
                 self.status = error;
                 self.mode = AppMode::Workspace;
-                let _ = windows::show_workspace();
+                self.restore_after_capture_interruption();
             }
         }
     }
@@ -403,6 +429,11 @@ impl ProofSnipApp {
         }
 
         let native_bounds = frame.bounds();
+        if let Err(error) = windows::ensure_overlay_bounds(native_bounds) {
+            self.status = error;
+            self.cancel_overlay();
+            return;
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(root, |ui| {
@@ -488,6 +519,7 @@ impl ProofSnipApp {
             self.cancel_overlay();
             return;
         }
+        self.overlay_bounds_guard = None;
         self.timings.release_to_clipboard = Some(released_at.elapsed());
         self.last_region = Some(selected);
         self.last_capture_texture = Some(context.load_texture(
@@ -528,14 +560,24 @@ impl ProofSnipApp {
     }
 
     fn cancel_overlay(&mut self) {
+        self.overlay_bounds_guard = None;
         self.overlay_frame = None;
         self.overlay_texture = None;
         self.selection_start = None;
         self.selection_end = None;
         self.mode = AppMode::Workspace;
-        if let Err(error) = windows::show_workspace() {
-            self.status = error;
+        self.restore_after_capture_interruption();
+    }
+
+    fn restore_after_capture_interruption(&mut self) {
+        if self.workspace_was_visible_before_capture {
+            if let Err(error) = windows::show_workspace() {
+                self.status = error;
+            }
+        } else {
+            windows::hide_window();
         }
+        self.workspace_was_visible_before_capture = false;
     }
 
     fn record_timings(&mut self) {
@@ -570,6 +612,7 @@ impl ProofSnipApp {
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             windows::hide_window();
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.toast_until = None;
             self.mode = AppMode::Workspace;
         } else {
@@ -1336,6 +1379,17 @@ impl eframe::App for ProofSnipApp {
         self.poll_tray(context);
         self.poll_workers();
 
+        if self.mode == AppMode::Overlay {
+            if let Some(bounds) = self.overlay_frame.as_ref().map(BgraFrame::bounds)
+                && let Err(error) = windows::ensure_overlay_bounds(bounds)
+            {
+                self.status = error;
+                self.cancel_overlay();
+            } else {
+                context.request_repaint_after(Duration::from_millis(8));
+            }
+        }
+
         if self.tray.is_some()
             && !self.exit_requested
             && context.input(|input| input.viewport().close_requested())
@@ -1368,6 +1422,26 @@ fn annotation_tool_button(
     if ui.selectable_label(*selected == tool, text).clicked() {
         *selected = tool;
     }
+}
+
+fn configure_overlay_viewport(context: &egui::Context, bounds: PixelRect) {
+    let pixels_per_point = context.pixels_per_point().max(0.1);
+    context.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(1.0, 1.0)));
+    context.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+        bounds.left as f32 / pixels_per_point,
+        bounds.top as f32 / pixels_per_point,
+    )));
+    context.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+        bounds.width() as f32 / pixels_per_point,
+        bounds.height() as f32 / pixels_per_point,
+    )));
+    context.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+    context.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
+    context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+        egui::WindowLevel::AlwaysOnTop,
+    ));
+    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    context.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
 fn annotation_for_drag(
