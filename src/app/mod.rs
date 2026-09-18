@@ -24,7 +24,10 @@ use crate::{
         tray::{TrayEvent, TrayReceiver},
         windows,
     },
-    ui::theme,
+    ui::{
+        components::{self, StatusTone},
+        theme,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +44,22 @@ enum CaptureAction {
     CopyOnly,
     AddEvidence,
     CaptureNote,
+}
+
+#[derive(Default)]
+struct WorkspaceRequests {
+    capture: Option<CaptureAction>,
+    capture_monitor: bool,
+    capture_active_window: bool,
+    export: bool,
+    add_last: bool,
+    save_last: bool,
+    annotate_last: bool,
+    pin_last: bool,
+    unpin: bool,
+    startup_change: Option<bool>,
+    reorder: Option<(usize, i32)>,
+    remove: Option<usize>,
 }
 
 enum WorkerMessage {
@@ -79,6 +98,7 @@ pub struct ProofSnipApp {
     overlay_texture: Option<TextureHandle>,
     selection_start: Option<PixelPoint>,
     selection_end: Option<PixelPoint>,
+    selection_pointer_down: bool,
     last_region: Option<PixelRect>,
     last_capture: Option<BgraFrame>,
     last_capture_texture: Option<TextureHandle>,
@@ -137,6 +157,7 @@ impl ProofSnipApp {
             overlay_texture: None,
             selection_start: None,
             selection_end: None,
+            selection_pointer_down: false,
             last_region: None,
             last_capture: None,
             last_capture_texture: None,
@@ -275,6 +296,7 @@ impl ProofSnipApp {
                 self.overlay_texture = Some(texture);
                 self.selection_start = None;
                 self.selection_end = None;
+                self.selection_pointer_down = false;
                 self.capture_action = action;
                 self.mode = AppMode::Overlay;
                 configure_overlay_viewport(context, bounds);
@@ -418,9 +440,10 @@ impl ProofSnipApp {
         }
 
         let cursor = windows::cursor_position();
-        let pressed = context.input(|input| input.pointer.primary_pressed());
-        let down = context.input(|input| input.pointer.primary_down());
-        let released = context.input(|input| input.pointer.primary_released());
+        let down = windows::primary_button_down();
+        let pressed = down && !self.selection_pointer_down;
+        let released = !down && self.selection_pointer_down;
+        self.selection_pointer_down = down;
         if pressed {
             self.selection_start = cursor;
             self.selection_end = cursor;
@@ -453,7 +476,7 @@ impl ProofSnipApp {
                     painter.rect_stroke(
                         selected_ui,
                         CornerRadius::ZERO,
-                        Stroke::new(2.0, theme::ACCENT),
+                        Stroke::new(2.5, theme::ACCENT_HOVER),
                         StrokeKind::Inside,
                     );
                     for point in [
@@ -462,25 +485,60 @@ impl ProofSnipApp {
                         selected_ui.left_bottom(),
                         selected_ui.right_bottom(),
                     ] {
-                        painter.circle_filled(point, 4.0, Color32::WHITE);
-                        painter.circle_stroke(point, 4.0, Stroke::new(1.5, theme::ACCENT));
+                        painter.circle_filled(point, 5.5, theme::SURFACE_ELEVATED);
+                        painter.circle_stroke(point, 5.5, Stroke::new(2.0, theme::ACCENT_HOVER));
                     }
                     let label = format!("{} × {}", selected.width(), selected.height());
-                    painter.text(
+                    let label_size = egui::vec2(label.chars().count() as f32 * 7.5 + 20.0, 28.0);
+                    let mut label_rect = egui::Rect::from_min_size(
                         selected_ui.left_top() + egui::vec2(8.0, 8.0),
-                        egui::Align2::LEFT_TOP,
+                        label_size,
+                    );
+                    if !rect.contains_rect(label_rect) {
+                        label_rect = egui::Rect::from_min_size(
+                            selected_ui.left_bottom() + egui::vec2(8.0, -label_size.y - 8.0),
+                            label_size,
+                        );
+                    }
+                    painter.rect_filled(
+                        label_rect,
+                        CornerRadius::same(theme::RADIUS_SM),
+                        theme::SURFACE_ELEVATED.gamma_multiply(0.94),
+                    );
+                    painter.rect_stroke(
+                        label_rect,
+                        CornerRadius::same(theme::RADIUS_SM),
+                        Stroke::new(1.0, theme::BORDER_FOCUS),
+                        StrokeKind::Inside,
+                    );
+                    painter.text(
+                        label_rect.center(),
+                        egui::Align2::CENTER_CENTER,
                         label,
                         egui::FontId::proportional(13.0),
-                        Color32::WHITE,
+                        theme::TEXT,
                     );
                 } else {
                     painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_black_alpha(92));
+                    let instruction_rect =
+                        egui::Rect::from_center_size(rect.center(), egui::vec2(278.0, 46.0));
+                    painter.rect_filled(
+                        instruction_rect,
+                        CornerRadius::same(theme::RADIUS_LG),
+                        theme::SURFACE_ELEVATED.gamma_multiply(0.96),
+                    );
+                    painter.rect_stroke(
+                        instruction_rect,
+                        CornerRadius::same(theme::RADIUS_LG),
+                        Stroke::new(1.0, theme::BORDER_FOCUS),
+                        StrokeKind::Inside,
+                    );
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "Drag to capture · Esc cancels",
+                        "Drag to capture   ·   Esc cancels",
                         egui::FontId::proportional(16.0),
-                        Color32::WHITE,
+                        theme::TEXT,
                     );
                 }
             });
@@ -565,6 +623,7 @@ impl ProofSnipApp {
         self.overlay_texture = None;
         self.selection_start = None;
         self.selection_end = None;
+        self.selection_pointer_down = false;
         self.mode = AppMode::Workspace;
         self.restore_after_capture_interruption();
     }
@@ -600,10 +659,16 @@ impl ProofSnipApp {
     fn render_toast(&mut self, root: &mut egui::Ui) {
         let context = root.ctx().clone();
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::SURFACE).inner_margin(12.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::SURFACE_ELEVATED)
+                    .stroke(Stroke::new(1.0, theme::SUCCESS.gamma_multiply(0.72)))
+                    .corner_radius(CornerRadius::same(theme::RADIUS_LG))
+                    .inner_margin(egui::Margin::symmetric(16, 12)),
+            )
             .show(root, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.colored_label(theme::SUCCESS, "●");
+                    components::status_badge(ui, "Copied", StatusTone::Success);
                     ui.label(RichText::new(&self.toast_text).color(theme::TEXT).strong());
                 });
             });
@@ -625,24 +690,40 @@ impl ProofSnipApp {
         let mut submit = context.input(|input| input.key_pressed(egui::Key::Enter));
         let cancel = context.input(|input| input.key_pressed(egui::Key::Escape));
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::SURFACE).inner_margin(14.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::SURFACE_ELEVATED)
+                    .stroke(Stroke::new(1.0, theme::BORDER_FOCUS))
+                    .corner_radius(CornerRadius::same(theme::RADIUS_LG))
+                    .inner_margin(16.0),
+            )
             .show(root, |ui| {
-                ui.label(RichText::new("Capture + Note").strong().color(theme::TEXT));
+                ui.horizontal(|ui| {
+                    components::status_badge(ui, "Evidence", StatusTone::Accent);
+                    ui.label(
+                        RichText::new("What does this capture show?")
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                });
+                ui.add_space(theme::SPACE_1);
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.note_draft)
-                        .hint_text("What does this screenshot prove?")
+                        .hint_text("Add a short evidence note")
                         .desired_width(f32::INFINITY),
                 );
                 response.request_focus();
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("Enter saves · Esc cancels")
+                        RichText::new("Enter adds to evidence · Esc cancels")
                             .small()
                             .color(theme::MUTED),
                     );
-                    if ui.button("Add to evidence").clicked() {
-                        submit = true;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if components::primary_button(ui, "Add to evidence").clicked() {
+                            submit = true;
+                        }
+                    });
                 });
             });
 
@@ -730,45 +811,84 @@ impl ProofSnipApp {
             .frame(
                 egui::Frame::new()
                     .fill(theme::SURFACE)
-                    .inner_margin(egui::Margin::symmetric(14, 10)),
+                    .stroke(Stroke::new(0.0, Color32::TRANSPARENT))
+                    .inner_margin(egui::Margin::symmetric(18, 12)),
             )
             .show(root, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Annotate capture")
+                                .size(17.0)
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        ui.label(
+                            RichText::new("Choose a tool, then draw directly on the screenshot")
+                                .small()
+                                .color(theme::MUTED),
+                        );
+                    });
+                    components::count_badge(ui, self.annotation_document.items.len());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        components::shortcut_chip(ui, "Enter");
+                        if components::primary_button(ui, "Done").clicked() {
+                            done_requested = true;
+                        }
+                        components::shortcut_chip(ui, "C");
+                        if components::secondary_button(ui, "Copy").clicked() {
+                            copy_requested = true;
+                        }
+                        if components::secondary_button(ui, "Cancel").clicked() {
+                            cancel_requested = true;
+                        }
+                    });
+                });
+                ui.add_space(theme::SPACE_3);
+                ui.separator();
+                ui.add_space(theme::SPACE_2);
                 ui.horizontal_wrapped(|ui| {
                     annotation_tool_button(
                         ui,
                         &mut self.annotation_tool,
                         AnnotationTool::Arrow,
-                        "Arrow  A",
+                        "Arrow",
+                        "A",
                     );
                     annotation_tool_button(
                         ui,
                         &mut self.annotation_tool,
                         AnnotationTool::Rectangle,
-                        "Rectangle  R",
+                        "Rectangle",
+                        "R",
                     );
                     annotation_tool_button(
                         ui,
                         &mut self.annotation_tool,
                         AnnotationTool::Highlight,
-                        "Highlight  H",
+                        "Highlight",
+                        "H",
                     );
                     annotation_tool_button(
                         ui,
                         &mut self.annotation_tool,
                         AnnotationTool::Text,
-                        "Text  T",
+                        "Text",
+                        "T",
                     );
                     annotation_tool_button(
                         ui,
                         &mut self.annotation_tool,
                         AnnotationTool::Redact,
-                        "Blur  B",
+                        "Redact",
+                        "B",
                     );
                     annotation_tool_button(
                         ui,
                         &mut self.annotation_tool,
                         AnnotationTool::Marker,
-                        "Number  1",
+                        "Number",
+                        "1",
                     );
                     ui.separator();
                     if ui
@@ -789,27 +909,19 @@ impl ProofSnipApp {
                     {
                         self.annotation_document.clear();
                     }
-                    if ui.button("Copy  C").clicked() {
-                        copy_requested = true;
-                    }
-                    if ui.button("Done  Enter").clicked() {
-                        done_requested = true;
-                    }
-                    if ui.button("Cancel  Esc").clicked() {
-                        cancel_requested = true;
-                    }
                 });
                 if self.annotation_tool == AnnotationTool::Text {
+                    ui.add_space(theme::SPACE_2);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.annotation_text)
                             .hint_text("Type text, then click the screenshot")
-                            .desired_width(420.0),
+                            .desired_width(f32::INFINITY),
                     );
                 }
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(12.0))
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(18.0))
             .show(root, |ui| {
                 let available = ui.available_size();
                 let scale = (available.x / image_width as f32)
@@ -939,190 +1051,273 @@ impl ProofSnipApp {
         };
     }
 
-    fn render_workspace(&mut self, root: &mut egui::Ui) {
-        let context = root.ctx().clone();
-        let mut capture_request = None;
-        let mut export_requested = false;
-        let mut add_last = false;
-        let mut save_last = false;
-        let mut annotate_last = false;
-        let mut pin_last = false;
-        let mut unpin = false;
-        let mut startup_change = None;
-        let mut reorder: Option<(usize, i32)> = None;
-        let mut remove = None;
+    fn render_capture_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        context: &egui::Context,
+        requests: &mut WorkspaceRequests,
+    ) {
+        components::card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                components::section_header(
+                    ui,
+                    "Capture",
+                    Some("Fast paths for the screenshot you need right now"),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    components::status_badge(ui, "Clipboard first", StatusTone::Success);
+                });
+            });
+            ui.add_space(theme::SPACE_4);
 
-        egui::Panel::top("header")
-            .frame(
-                egui::Frame::new()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(20, 14)),
-            )
-            .show(root, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.heading(RichText::new("ProofSnip").color(theme::TEXT));
-                        ui.label(
-                            RichText::new("Fast capture. Clean evidence.").color(theme::MUTED),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(!self.export_in_progress, egui::Button::new("Export PDF"))
-                            .clicked()
-                        {
-                            export_requested = true;
-                        }
-                        if self.export_in_progress {
-                            ui.spinner();
-                            ui.label("Exporting…");
-                        }
-                    });
+            components::section_frame().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    if components::primary_button(ui, "Capture region").clicked() {
+                        requests.capture = Some(CaptureAction::CopyOnly);
+                    }
+                    components::shortcut_chip(ui, "Ctrl+Shift+4");
+                    ui.label(
+                        RichText::new("Drag, release, and paste immediately.")
+                            .small()
+                            .color(theme::MUTED),
+                    );
                 });
             });
 
-        egui::CentralPanel::default().show(root, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                theme::card().show(ui, |ui| {
-                    ui.label(RichText::new("Capture").strong().color(theme::TEXT));
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Region   Ctrl+Shift+4").clicked() {
-                            capture_request = Some(CaptureAction::CopyOnly);
-                        }
-                        if ui.button("Add to evidence").clicked() {
-                            capture_request = Some(CaptureAction::AddEvidence);
-                        }
-                        if ui.button("Capture + Note").clicked() {
-                            capture_request = Some(CaptureAction::CaptureNote);
-                        }
-                        ui.label(
-                            RichText::new("Monitor Ctrl+Shift+7 · Active window Ctrl+Shift+8")
-                                .small()
-                                .color(theme::MUTED),
-                        );
-                        if ui
-                            .add_enabled(
-                                self.last_region.is_some(),
-                                egui::Button::new("Same region   Ctrl+Shift+5"),
-                            )
-                            .clicked()
-                        {
-                            self.capture_same_region(&context);
-                        }
-                    });
-                    ui.label(
-                        RichText::new("Ctrl+Shift+6 reopens this workspace")
-                            .small()
-                            .color(theme::MUTED),
-                    );
-                });
-
-                ui.add_space(10.0);
-                theme::card().show(ui, |ui| {
-                    ui.label(RichText::new("Settings").strong().color(theme::TEXT));
-                    let response = ui.checkbox(
-                        &mut self.startup_enabled,
-                        "Start ProofSnip when I sign in to Windows",
-                    );
-                    if response.changed() {
-                        startup_change = Some(self.startup_enabled);
-                    }
-                    ui.label(
-                        RichText::new("Stored locally in the current user's Windows Run key.")
-                            .small()
-                            .color(theme::MUTED),
-                    );
-                });
-
-                ui.add_space(10.0);
-                if let (Some(frame), Some(texture)) =
-                    (&self.last_capture, &self.last_capture_texture)
-                {
-                    theme::card().show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Latest capture").strong());
-                            ui.label(
-                                RichText::new(format!("{} × {}", frame.width, frame.height))
-                                    .color(theme::MUTED),
-                            );
-                        });
-                        let max_width = ui.available_width().min(520.0);
-                        let scale = (max_width / frame.width as f32)
-                            .min(220.0 / frame.height as f32)
-                            .min(1.0);
-                        ui.image((
-                            texture.id(),
-                            egui::vec2(frame.width as f32 * scale, frame.height as f32 * scale),
-                        ));
-                        ui.horizontal(|ui| {
-                            if ui.button("Add to evidence").clicked() {
-                                add_last = true;
-                            }
-                            if ui.button("Save PNG").clicked() {
-                                save_last = true;
-                            }
-                            if ui.button("Annotate").clicked() {
-                                annotate_last = true;
-                            }
-                            if ui.button("Pin latest").clicked() {
-                                pin_last = true;
-                            }
-                            if self.pinned_capture.is_some() && ui.button("Unpin").clicked() {
-                                unpin = true;
-                            }
-                        });
-                    });
-                    ui.add_space(10.0);
+            ui.add_space(theme::SPACE_3);
+            ui.horizontal_wrapped(|ui| {
+                if components::secondary_button(ui, "Capture to evidence").clicked() {
+                    requests.capture = Some(CaptureAction::AddEvidence);
                 }
+                if components::secondary_button(ui, "Capture + note").clicked() {
+                    requests.capture = Some(CaptureAction::CaptureNote);
+                }
+                if components::secondary_button(ui, "Full monitor").clicked() {
+                    requests.capture_monitor = true;
+                }
+                components::shortcut_chip(ui, "Ctrl+Shift+7");
+                if components::secondary_button(ui, "Active window").clicked() {
+                    requests.capture_active_window = true;
+                }
+                components::shortcut_chip(ui, "Ctrl+Shift+8");
+            });
 
-                theme::card().show(ui, |ui| {
-                    ui.horizontal(|ui| {
+            ui.add_space(theme::SPACE_2);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(self.last_region.is_some(), |ui| {
+                    if components::secondary_button(ui, "Capture same region").clicked() {
+                        self.capture_same_region(context);
+                    }
+                });
+                components::shortcut_chip(ui, "Ctrl+Shift+5");
+                ui.label(
+                    RichText::new("Workspace shortcut: Ctrl+Shift+6")
+                        .small()
+                        .color(theme::MUTED),
+                );
+            });
+        });
+    }
+
+    fn render_latest_section(&self, ui: &mut egui::Ui, requests: &mut WorkspaceRequests) {
+        components::card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            components::section_header(ui, "Latest capture", Some("Review once, then keep moving"));
+            ui.add_space(theme::SPACE_3);
+
+            if let (Some(frame), Some(texture)) = (&self.last_capture, &self.last_capture_texture) {
+                ui.horizontal_wrapped(|ui| {
+                    components::status_badge(
+                        ui,
+                        format!("{} × {}", frame.width, frame.height),
+                        StatusTone::Neutral,
+                    );
+                    components::status_badge(ui, "Ready", StatusTone::Success);
+                    if self.pinned_capture.is_some() {
+                        components::status_badge(ui, "Pinned", StatusTone::Accent);
+                    }
+                });
+                ui.add_space(theme::SPACE_2);
+
+                let available_width = ui.available_width().max(1.0);
+                let preview_height = 242.0;
+                let scale = (available_width / frame.width as f32)
+                    .min(preview_height / frame.height as f32)
+                    .min(1.0);
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(CornerRadius::same(theme::RADIUS_MD))
+                    .inner_margin(theme::SPACE_2)
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.centered_and_justified(|ui| {
+                            ui.image((
+                                texture.id(),
+                                egui::vec2(frame.width as f32 * scale, frame.height as f32 * scale),
+                            ));
+                        });
+                    });
+
+                ui.add_space(theme::SPACE_3);
+                ui.horizontal_wrapped(|ui| {
+                    if components::primary_button(ui, "Add to evidence").clicked() {
+                        requests.add_last = true;
+                    }
+                    if components::secondary_button(ui, "Annotate").clicked() {
+                        requests.annotate_last = true;
+                    }
+                    if components::secondary_button(ui, "Save PNG").clicked() {
+                        requests.save_last = true;
+                    }
+                    if self.pinned_capture.is_some() {
+                        if components::secondary_button(ui, "Unpin").clicked() {
+                            requests.unpin = true;
+                        }
+                    } else if components::secondary_button(ui, "Pin above windows").clicked() {
+                        requests.pin_last = true;
+                    }
+                });
+            } else {
+                components::section_frame().show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(theme::SPACE_5);
                         ui.label(
-                            RichText::new("Evidence session")
+                            RichText::new("Your latest capture will appear here")
                                 .strong()
                                 .color(theme::TEXT),
                         );
                         ui.label(
-                            RichText::new(format!("{} captures", self.session.captures.len()))
+                            RichText::new("Press Ctrl+Shift+4 to capture a region.")
+                                .small()
                                 .color(theme::MUTED),
                         );
+                        ui.add_space(theme::SPACE_5);
                     });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.session.name)
-                            .hint_text("Session title"),
-                    );
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.session.description)
-                            .hint_text("Optional context or reproduction notes")
-                            .desired_rows(2),
-                    );
                 });
+            }
+        });
+    }
 
-                ui.add_space(10.0);
-                let capture_count = self.session.captures.len();
-                for (index, capture) in self.session.captures.iter_mut().enumerate() {
-                    let id = capture.id;
-                    theme::card().show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
+    fn render_session_section(&mut self, ui: &mut egui::Ui) {
+        components::card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                components::section_header(
+                    ui,
+                    "Evidence session",
+                    Some("Give the collection enough context to stand on its own"),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    components::count_badge(ui, self.session.captures.len());
+                });
+            });
+            ui.add_space(theme::SPACE_3);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.session.name)
+                    .hint_text("Evidence title")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(theme::SPACE_2);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.session.description)
+                    .hint_text("Optional context, environment, or reproduction notes")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            );
+        });
+    }
+
+    fn render_evidence_cards(&mut self, ui: &mut egui::Ui, requests: &mut WorkspaceRequests) {
+        ui.horizontal(|ui| {
+            components::section_header(
+                ui,
+                "Evidence captures",
+                Some("Order the story, label each step, and keep captions concise"),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                components::count_badge(ui, self.session.captures.len());
+            });
+        });
+        ui.add_space(theme::SPACE_3);
+
+        if self.session.captures.is_empty() {
+            components::card_frame().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.add_space(theme::SPACE_6);
+                    ui.label(
+                        RichText::new("No evidence captures yet")
+                            .size(17.0)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    ui.add_space(theme::SPACE_1);
+                    ui.label(
+                        RichText::new(
+                            "Capture directly to evidence, or add the latest screenshot when ready.",
+                        )
+                        .color(theme::MUTED),
+                    );
+                    ui.add_space(theme::SPACE_6);
+                });
+            });
+            return;
+        }
+
+        let capture_count = self.session.captures.len();
+        for (index, capture) in self.session.captures.iter_mut().enumerate() {
+            let id = capture.id;
+            components::card_frame().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal_top(|ui| {
+                    egui::Frame::new()
+                        .fill(theme::BG)
+                        .stroke(Stroke::new(1.0, theme::BORDER))
+                        .corner_radius(CornerRadius::same(theme::RADIUS_MD))
+                        .inner_margin(theme::SPACE_2)
+                        .show(ui, |ui| {
+                            ui.set_width(214.0);
+                            ui.set_height(132.0);
                             if let Some(texture) = self.evidence_textures.get(&id) {
-                                let scale = (180.0 / capture.frame.width as f32)
-                                    .min(112.0 / capture.frame.height as f32)
+                                let scale = (198.0 / capture.frame.width as f32)
+                                    .min(116.0 / capture.frame.height as f32)
                                     .min(1.0);
-                                ui.image((
-                                    texture.id(),
-                                    egui::vec2(
-                                        capture.frame.width as f32 * scale,
-                                        capture.frame.height as f32 * scale,
-                                    ),
-                                ));
+                                ui.centered_and_justified(|ui| {
+                                    ui.image((
+                                        texture.id(),
+                                        egui::vec2(
+                                            capture.frame.width as f32 * scale,
+                                            capture.frame.height as f32 * scale,
+                                        ),
+                                    ));
+                                });
                             }
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Capture {}", index + 1)).strong(),
-                                    );
+                        });
+
+                    ui.vertical(|ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("Capture {}", index + 1))
+                                    .size(16.0)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            components::status_badge(
+                                ui,
+                                format!("{} × {}", capture.frame.width, capture.frame.height),
+                                StatusTone::Neutral,
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
                                     egui::ComboBox::from_id_salt(("label", id))
                                         .selected_text(capture.label.display())
+                                        .width(118.0)
                                         .show_ui(ui, |ui| {
                                             for label in EvidenceLabel::ALL {
                                                 ui.selectable_value(
@@ -1132,89 +1327,244 @@ impl ProofSnipApp {
                                                 );
                                             }
                                         });
-                                });
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut capture.caption)
-                                        .hint_text("Optional caption")
-                                        .desired_rows(2)
-                                        .desired_width(f32::INFINITY),
-                                );
-                                ui.horizontal(|ui| {
-                                    if ui.add_enabled(index > 0, egui::Button::new("↑")).clicked()
-                                    {
-                                        reorder = Some((index, -1));
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            index + 1 < capture_count,
-                                            egui::Button::new("↓"),
-                                        )
-                                        .clicked()
-                                    {
-                                        reorder = Some((index, 1));
-                                    }
-                                    if ui
-                                        .button(RichText::new("Remove").color(theme::DANGER))
-                                        .clicked()
-                                    {
-                                        remove = Some(index);
-                                    }
-                                });
+                                    ui.label(RichText::new("Stage").small().color(theme::MUTED));
+                                },
+                            );
+                        });
+                        ui.add_space(theme::SPACE_2);
+                        ui.add(
+                            egui::TextEdit::multiline(&mut capture.caption)
+                                .hint_text("What does this screenshot prove?")
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(theme::SPACE_2);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_enabled_ui(index > 0, |ui| {
+                                if components::secondary_button(ui, "Move up").clicked() {
+                                    requests.reorder = Some((index, -1));
+                                }
                             });
+                            ui.add_enabled_ui(index + 1 < capture_count, |ui| {
+                                if components::secondary_button(ui, "Move down").clicked() {
+                                    requests.reorder = Some((index, 1));
+                                }
+                            });
+                            if components::danger_button(
+                                ui,
+                                RichText::new("Remove").color(theme::DANGER),
+                            )
+                            .clicked()
+                            {
+                                requests.remove = Some(index);
+                            }
                         });
                     });
-                    ui.add_space(8.0);
-                }
-
-                if self.session.captures.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(28.0);
-                        ui.label(RichText::new("No evidence captures yet").color(theme::MUTED));
-                        ui.label(
-                            RichText::new("Normal snipping remains independent and fast.")
-                                .small()
-                                .color(theme::MUTED),
-                        );
-                        ui.add_space(28.0);
-                    });
-                }
-
-                theme::card().show(ui, |ui| {
-                    ui.label(RichText::new("Performance").strong());
-                    if self.timing_history.is_empty() {
-                        ui.label(
-                            RichText::new("Capture timings appear here after the first snip.")
-                                .color(theme::MUTED),
-                        );
-                    }
-                    for timing in &self.timing_history {
-                        ui.label(
-                            RichText::new(timing)
-                                .monospace()
-                                .small()
-                                .color(theme::MUTED),
-                        );
-                    }
                 });
-                ui.add_space(8.0);
-                ui.label(RichText::new(&self.status).color(theme::MUTED));
+            });
+            ui.add_space(theme::SPACE_3);
+        }
+    }
+
+    fn render_settings_card(&mut self, ui: &mut egui::Ui, requests: &mut WorkspaceRequests) {
+        components::card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            components::section_header(
+                ui,
+                "Startup",
+                Some("Keep ProofSnip ready without opening the workspace"),
+            );
+            ui.add_space(theme::SPACE_3);
+            let response = ui.checkbox(
+                &mut self.startup_enabled,
+                "Start ProofSnip when I sign in to Windows",
+            );
+            if response.changed() {
+                requests.startup_change = Some(self.startup_enabled);
+            }
+            ui.label(
+                RichText::new("Stored locally in the current user's Windows Run key.")
+                    .small()
+                    .color(theme::MUTED),
+            );
+        });
+    }
+
+    fn render_diagnostics_card(&self, ui: &mut egui::Ui) {
+        components::card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            egui::CollapsingHeader::new(
+                RichText::new("Capture diagnostics")
+                    .strong()
+                    .color(theme::TEXT),
+            )
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Development timings for the most recent capture paths.")
+                        .small()
+                        .color(theme::MUTED),
+                );
+                ui.add_space(theme::SPACE_2);
+                if self.timing_history.is_empty() {
+                    ui.label(
+                        RichText::new("Capture timings appear after the first snip.")
+                            .color(theme::MUTED),
+                    );
+                }
+                for timing in &self.timing_history {
+                    ui.label(
+                        RichText::new(timing)
+                            .monospace()
+                            .small()
+                            .color(theme::MUTED),
+                    );
+                }
             });
         });
+    }
 
-        if let Some(action) = capture_request {
+    fn render_workspace(&mut self, root: &mut egui::Ui) {
+        let context = root.ctx().clone();
+        let mut requests = WorkspaceRequests::default();
+        let has_evidence = !self.session.captures.is_empty();
+
+        egui::Panel::top("header")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .stroke(Stroke::new(0.0, Color32::TRANSPARENT))
+                    .inner_margin(egui::Margin::symmetric(24, 16)),
+            )
+            .show(root, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.heading(
+                                RichText::new("ProofSnip")
+                                    .size(25.0)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            components::status_badge(ui, "Resident", StatusTone::Success);
+                        });
+                        ui.label(
+                            RichText::new("Capture instantly. Build evidence deliberately.")
+                                .color(theme::MUTED),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.export_in_progress {
+                            ui.spinner();
+                            components::status_badge(ui, "Exporting PDF", StatusTone::Accent);
+                        } else {
+                            ui.add_enabled_ui(has_evidence, |ui| {
+                                if components::primary_button(ui, "Export evidence PDF").clicked() {
+                                    requests.export = true;
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::symmetric(22, 18)),
+            )
+            .show(root, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let content_width = ui.available_width().min(1180.0);
+                        let left_padding = ((ui.available_width() - content_width) * 0.5).max(0.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(left_padding);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(content_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    components::status_banner(
+                                        ui,
+                                        status_tone(&self.status),
+                                        self.status.clone(),
+                                    );
+                                    ui.add_space(theme::SPACE_4);
+
+                                    if ui.available_width() >= 860.0 {
+                                        ui.columns(2, |columns| {
+                                            self.render_capture_section(
+                                                &mut columns[0],
+                                                &context,
+                                                &mut requests,
+                                            );
+                                            self.render_latest_section(
+                                                &mut columns[1],
+                                                &mut requests,
+                                            );
+                                        });
+                                    } else {
+                                        self.render_capture_section(ui, &context, &mut requests);
+                                        ui.add_space(theme::SPACE_3);
+                                        self.render_latest_section(ui, &mut requests);
+                                    }
+
+                                    ui.add_space(theme::SPACE_4);
+                                    self.render_session_section(ui);
+                                    ui.add_space(theme::SPACE_5);
+                                    self.render_evidence_cards(ui, &mut requests);
+                                    ui.add_space(theme::SPACE_3);
+
+                                    if ui.available_width() >= 860.0 {
+                                        ui.columns(2, |columns| {
+                                            self.render_settings_card(
+                                                &mut columns[0],
+                                                &mut requests,
+                                            );
+                                            self.render_diagnostics_card(&mut columns[1]);
+                                        });
+                                    } else {
+                                        self.render_settings_card(ui, &mut requests);
+                                        ui.add_space(theme::SPACE_3);
+                                        self.render_diagnostics_card(ui);
+                                    }
+                                    ui.add_space(theme::SPACE_5);
+                                },
+                            );
+                        });
+                    });
+            });
+
+        if let Some(action) = requests.capture {
             self.begin_capture(&context, action, None);
         }
-        if add_last && let Some(frame) = self.last_capture.clone() {
+        if requests.capture_monitor {
+            match windows::monitor_under_cursor() {
+                Ok(rect) => self.capture_rect(&context, rect, "monitor"),
+                Err(error) => self.status = error,
+            }
+        }
+        if requests.capture_active_window {
+            match windows::active_window_rect() {
+                Ok(rect) => self.capture_rect(&context, rect, "active window"),
+                Err(error) => self.status = error,
+            }
+        }
+        if requests.add_last
+            && let Some(frame) = self.last_capture.clone()
+        {
             self.add_evidence_frame(&context, frame, String::new());
             self.status = "Latest capture added to evidence".into();
         }
-        if save_last {
+        if requests.save_last {
             self.save_last_png(&context);
         }
-        if annotate_last {
+        if requests.annotate_last {
             self.start_annotation(&context);
         }
-        if pin_last
+        if requests.pin_last
             && let (Some(frame), Some(texture)) = (&self.last_capture, &self.last_capture_texture)
         {
             self.pinned_capture = Some(PinnedCapture {
@@ -1224,14 +1574,15 @@ impl ProofSnipApp {
             });
             self.status = "Latest capture pinned above other windows".into();
         }
-        if unpin {
+        if requests.unpin {
             self.pinned_capture = None;
             context.send_viewport_cmd_to(
                 egui::ViewportId::from_hash_of("proofsnip-pin"),
                 egui::ViewportCommand::Close,
             );
+            self.status = "Pinned capture closed".into();
         }
-        if let Some(enabled) = startup_change {
+        if let Some(enabled) = requests.startup_change {
             match startup::set_enabled(enabled) {
                 Ok(()) => {
                     self.status = if enabled {
@@ -1246,21 +1597,23 @@ impl ProofSnipApp {
                 }
             }
         }
-        if let Some((index, direction)) = reorder {
+        if let Some((index, direction)) = requests.reorder {
             if direction < 0 {
                 self.session.move_up(index);
             } else {
                 self.session.move_down(index);
             }
+            self.status = "Evidence order updated".into();
         }
-        if let Some(index) = remove {
+        if let Some(index) = requests.remove {
             let id = self.session.captures.get(index).map(|capture| capture.id);
             self.session.remove(index);
             if let Some(id) = id {
                 self.evidence_textures.remove(&id);
             }
+            self.status = "Evidence capture removed".into();
         }
-        if export_requested {
+        if requests.export {
             self.start_pdf_export(&context);
         }
     }
@@ -1351,7 +1704,12 @@ impl ProofSnipApp {
             move |ui, _class| {
                 let close_requested = ui.input(|input| input.viewport().close_requested());
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(Color32::BLACK).inner_margin(8.0))
+                    .frame(
+                        egui::Frame::new()
+                            .fill(theme::BG)
+                            .stroke(Stroke::new(1.0, theme::BORDER_FOCUS))
+                            .inner_margin(10.0),
+                    )
                     .show(ui, |ui| {
                         let available = ui.available_size();
                         let fit = (available.x / pinned.width as f32)
@@ -1413,13 +1771,63 @@ impl eframe::App for ProofSnipApp {
     }
 }
 
+fn status_tone(status: &str) -> StatusTone {
+    let status = status.to_ascii_lowercase();
+    if status.contains("failed")
+        || status.contains("error")
+        || status.contains("could not")
+        || status.contains("unavailable")
+    {
+        StatusTone::Danger
+    } else if status.contains("saving") || status.contains("exporting") {
+        StatusTone::Accent
+    } else if status.contains("cancel") || status.contains("no previous") {
+        StatusTone::Warning
+    } else if status.contains("copied")
+        || status.contains("saved")
+        || status.contains("exported")
+        || status.contains("added")
+        || status.contains("applied")
+        || status.contains("updated")
+        || status.contains("ready")
+    {
+        StatusTone::Success
+    } else {
+        StatusTone::Neutral
+    }
+}
+
 fn annotation_tool_button(
     ui: &mut egui::Ui,
     selected: &mut AnnotationTool,
     tool: AnnotationTool,
-    text: &str,
+    label: &str,
+    shortcut: &str,
 ) {
-    if ui.selectable_label(*selected == tool, text).clicked() {
+    let active = *selected == tool;
+    let response = ui.add(
+        egui::Button::new(
+            RichText::new(format!("{label}   {shortcut}"))
+                .strong()
+                .color(if active { Color32::WHITE } else { theme::TEXT }),
+        )
+        .fill(if active {
+            theme::ACCENT
+        } else {
+            theme::SURFACE_ELEVATED
+        })
+        .stroke(Stroke::new(
+            1.0,
+            if active {
+                theme::ACCENT_HOVER
+            } else {
+                theme::BORDER
+            },
+        ))
+        .corner_radius(CornerRadius::same(theme::RADIUS_MD))
+        .min_size(egui::vec2(0.0, theme::CONTROL_HEIGHT)),
+    );
+    if response.clicked() {
         *selected = tool;
     }
 }

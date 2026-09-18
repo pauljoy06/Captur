@@ -45,7 +45,9 @@ src/
 ├── encoding/wic.rs      isolated WIC PNG encoder
 ├── evidence/mod.rs      session model and JSON folder representation
 ├── export/pdf.rs        immutable model to direct PDF generation
-└── ui/theme.rs          compact ProofSnip design tokens
+└── ui/
+    ├── theme.rs         ProofSnip design tokens and dark visual system
+    └── components.rs    reusable cards, buttons, badges, and status surfaces
 ```
 
 The critical path is:
@@ -133,7 +135,7 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 - **Mixed-DPI overlay:** the process is per-monitor-v2 aware and all selection/crop geometry uses physical pixels, including negative virtual-desktop coordinates. A single HWND spanning monitors with different scale factors still requires real Windows hardware validation because winit/egui controls the rendering scale for that HWND.
 - **Capture freshness:** ProofSnip hides its window and calls `DwmFlush` before acquiring a frame. Desktop Duplication can still return timeout or access-lost errors during display changes, secure-desktop transitions, or device resets. Those errors are reported and the next capture creates fresh DXGI state.
 - **PDF memory:** export consumes an immutable session snapshot and raw BGRA images on a worker thread. This preserves screenshot quality and capture responsiveness, but a session containing many 4K screenshots can temporarily use substantial memory while the PDF is assembled.
-- **WSL boundary:** compilation is validated in WSL with the MSVC target and `cargo-xwin`. Global hotkeys, DXGI, clipboard, native dialogs, tray behavior, and PDF export have also been exercised by the Windows acceptance scripts. A post-fix mixed-DPI, two-monitor run remains a manual hardware check because the final validation session exposed one 1920×1200 monitor.
+- **WSL boundary:** compilation is validated in WSL with the MSVC target and `cargo-xwin`. Global hotkeys, DXGI, clipboard, native dialogs, tray behavior, and PDF export have also been exercised by the Windows acceptance scripts. The latest validation covered a 4480×1440 two-monitor virtual desktop. A monitor positioned left or above the primary display and a mixed-scale monitor pair remain manual hardware checks.
 - **Secondary egui viewports:** pinned screenshots use egui's immediate native viewport support. Always-on-top behavior, resizing, and close handling should be checked against the installed Windows graphics driver and desktop configuration.
 - **Annotation cost:** annotations are previewed as egui vector shapes, then rasterized into a BGRA frame only when copied or completed. Text rasterization uses isolated GDI calls through windows-rs. This work is outside the snipping critical path.
 - **eframe internals:** ProofSnip does not directly depend on or use `arboard`, `image`, or `png` for screenshot capture or encoding. The required eframe 0.36 native integration currently enables those crates transitively for its own clipboard/icon support and does not expose a feature to disable them. ProofSnip's capture clipboard remains the native `CF_DIBV5` implementation and WIC remains its only PNG encoder.
@@ -162,18 +164,19 @@ The packaged release executable was exercised on Windows 11 through its real glo
 
 | Workflow | Observed result |
 | --- | ---: |
-| Cold process start to resident window | 2105 ms |
-| Region hotkey to full 1920×1200 overlay | 130 ms |
-| Region mouse release to clipboard bitmap | 145 ms |
-| Same-region hotkey to clipboard | 247 ms |
-| Full-monitor hotkey to clipboard | 333 ms |
-| Active-window hotkey to clipboard | 180 ms |
-| Escape to hidden resident state | 206 ms |
-| Two-capture evidence export after save-dialog action | 2102 ms |
+| Cold process start to resident window | 2028 ms |
+| Region hotkey to full 4480×1440 two-monitor overlay | 266 ms |
+| Region mouse release to clipboard bitmap | 29 ms |
+| 320×180 physical drag to exact 320×180 captured bitmap | matched |
+| Same-region hotkey to clipboard | 184 ms |
+| Full-monitor hotkey to clipboard | 307 ms |
+| Active-window hotkey to clipboard | 230 ms |
+| Escape to hidden resident state | 176 ms |
+| Two-capture evidence export after save-dialog action | 2351 ms |
 
-The final evidence run produced a 411,964-byte, two-page A4 PDF. Extracted document text confirmed the session title, reordered `After`/`Before` labels, both captions, and generated timestamps. A real native **Save PNG** action also produced a valid 1920×1200 RGBA PNG through WIC. The UX run confirmed that a numbered annotation changed screenshot pixels without changing its 1920×1200 dimensions, the pin viewport had the topmost extended style, the startup checkbox changed and restored the Run value, closing kept the process resident, the tray reopened the workspace, and tray Exit stopped it.
+The final evidence run produced a valid 761,380-byte PDF from two 2560×1440 captures. Extracted document text confirmed the session title, reordered `After`/`Before` labels, both captions, and generated timestamps. The UX run confirmed that an annotation changed screenshot pixels without changing its 2560×1440 dimensions, the pin viewport was visible and topmost, the startup checkbox changed and restored the Run value, closing kept the process resident, the tray reopened the workspace, and tray Exit stopped it. Every acceptance script restored the clipboard, startup value, and resident process state it changed.
 
-These are development measurements, not performance guarantees. The automated mouse coordinates assume ProofSnip's intentionally normalized 1120×760 evidence workspace. Run the scripts only in a disposable interactive desktop session because they temporarily move the cursor, use the clipboard, open windows, and toggle ProofSnip's own startup value. Each script restores the state it changes in a `finally` block.
+These are development measurements, not performance guarantees. The automated acceptance scripts use window-relative coordinates so they can follow ProofSnip's DPI-aware workspace sizing. Run the scripts only in a disposable interactive desktop session because they temporarily move the cursor, use the clipboard, open windows, and toggle ProofSnip's own startup value. Each script restores the state it changes in a `finally` block.
 
 From WSL, copy the release executable and scripts to a Windows-local temporary folder before running them. This avoids occasional PowerShell/COM stalls when a script itself is loaded from a `\\wsl.localhost` UNC path:
 

@@ -22,8 +22,8 @@ fn main() -> eframe::Result<()> {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title(platform::windows::WINDOW_TITLE)
-            .with_inner_size([440.0, 620.0])
-            .with_min_inner_size([360.0, 420.0])
+            .with_inner_size([1040.0, 720.0])
+            .with_min_inner_size([720.0, 520.0])
             .with_visible(!start_hidden)
             .with_resizable(true),
         ..Default::default()

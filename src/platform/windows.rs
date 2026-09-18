@@ -12,11 +12,18 @@ use windows::{
         Foundation::{HWND, POINT, RECT},
         Graphics::{
             Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
-            Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint},
+            Gdi::{
+                GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+                MonitorFromWindow,
+            },
         },
         System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
         UI::{
-            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+            HiDpi::{
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
+                SetProcessDpiAwarenessContext,
+            },
+            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
             WindowsAndMessaging::{
                 FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetForegroundWindow, GetPhysicalCursorPos,
                 GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_HIDE, SW_SHOW,
@@ -172,15 +179,37 @@ pub fn show_workspace() -> Result<(), String> {
     let hwnd = app_window()?;
     // Safety: hwnd is our top-level eframe window. eframe handles subsequent client rendering.
     unsafe {
+        let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut monitor_info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
+            return Err("could not query the workspace monitor".into());
+        }
+
+        let work = monitor_info.rcWork;
+        let work_width = work.right.saturating_sub(work.left);
+        let work_height = work.bottom.saturating_sub(work.top);
+        let desired_width = (1040_i32.saturating_mul(dpi) / 96)
+            .min(work_width.saturating_sub(48))
+            .max(720.min(work_width));
+        let desired_height = (720_i32.saturating_mul(dpi) / 96)
+            .min(work_height.saturating_sub(48))
+            .max(520.min(work_height));
+        let x = work.left + (work_width - desired_width) / 2;
+        let y = work.top + (work_height - desired_height) / 2;
+
         SetWindowLongPtrW(hwnd, GWL_STYLE, 0x00CF_0000_u32 as isize);
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, 0);
         SetWindowPos(
             hwnd,
             None,
-            100,
-            100,
-            1120,
-            760,
+            x,
+            y,
+            desired_width,
+            desired_height,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW,
         )
         .map_err(|error| format!("could not show evidence workspace: {error}"))?;
@@ -192,16 +221,16 @@ pub fn show_workspace() -> Result<(), String> {
 
 pub fn show_toast(anchor: PixelRect) -> Result<(), String> {
     show_compact_window(
-        anchor.right.saturating_sub(330),
-        anchor.bottom.saturating_sub(76),
-        310,
-        52,
+        anchor.right.saturating_sub(370),
+        anchor.bottom.saturating_sub(84),
+        350,
+        60,
         false,
     )
 }
 
 pub fn show_note_prompt(anchor: PixelRect) -> Result<(), String> {
-    show_compact_window(anchor.left, anchor.bottom.saturating_add(8), 520, 126, true)
+    show_compact_window(anchor.left, anchor.bottom.saturating_add(8), 560, 150, true)
 }
 
 fn show_compact_window(
@@ -242,6 +271,11 @@ pub fn cursor_position() -> Option<PixelPoint> {
         x: point.x,
         y: point.y,
     })
+}
+
+pub fn primary_button_down() -> bool {
+    // Safety: GetAsyncKeyState reads process-independent input state and requires no pointers.
+    unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
 }
 
 pub fn monitor_under_cursor() -> Result<PixelRect, String> {

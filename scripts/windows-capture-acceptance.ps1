@@ -229,6 +229,8 @@ try {
     [void][ProofSnipAcceptanceNative]::GetPhysicalCursorPos([ref]$physicalStart)
     Start-Sleep -Milliseconds 40
     [ProofSnipAcceptanceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    # Give the overlay one input/repaint cycle to latch the physical drag origin before moving.
+    Start-Sleep -Milliseconds 80
     for ($step = 1; $step -le 12; $step++) {
         $x = $startX + [int](($endX - $startX) * $step / 12)
         $y = $startY + [int](($endY - $startY) * $step / 12)
@@ -237,6 +239,7 @@ try {
     }
     [ProofSnipAcceptanceNative+POINT]$physicalEnd = New-Object ProofSnipAcceptanceNative+POINT
     [void][ProofSnipAcceptanceNative]::GetPhysicalCursorPos([ref]$physicalEnd)
+    Start-Sleep -Milliseconds 40
     $before = [ProofSnipAcceptanceNative]::GetClipboardSequenceNumber()
     [ProofSnipAcceptanceNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     $region = Wait-ClipboardImage $before 5000
@@ -244,6 +247,9 @@ try {
     $expectedHeight = [Math]::Abs($physicalEnd.Y - $physicalStart.Y)
     if ($region.width -lt 2 -or $region.height -lt 2) {
         throw "Region clipboard bitmap was empty: $($region.width)x$($region.height)"
+    }
+    if ([Math]::Abs($region.width - $expectedWidth) -gt 4 -or [Math]::Abs($region.height - $expectedHeight) -gt 4) {
+        throw "Region clipboard bitmap did not match the physical drag: $($region.width)x$($region.height) versus ${expectedWidth}x${expectedHeight}"
     }
     $results.region_release_to_clipboard_ms = $region.elapsed_ms
     $results.region_automation_physical_delta = "${expectedWidth}x${expectedHeight}"

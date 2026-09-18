@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExePath,
-    [Parameter(Mandatory = $true)][string]$ResultPath
+    [Parameter(Mandatory = $true)][string]$ResultPath,
+    [string]$ScreenshotPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -142,6 +143,26 @@ function Click-Relative([IntPtr]$window, [int]$x, [int]$y) {
     Start-Sleep -Milliseconds 180
 }
 
+function Click-Normalized([IntPtr]$window, [double]$x, [double]$y) {
+    [ProofSnipUxNative+RECT]$rect = New-Object ProofSnipUxNative+RECT
+    [void][ProofSnipUxNative]::GetWindowRect($window, [ref]$rect)
+    Click-Relative $window ([int](($rect.Right - $rect.Left) * $x)) ([int](($rect.Bottom - $rect.Top) * $y))
+}
+
+function Save-WindowScreenshot([IntPtr]$window, [string]$path) {
+    if ([string]::IsNullOrWhiteSpace($path)) { return }
+    [ProofSnipUxNative+RECT]$rect = New-Object ProofSnipUxNative+RECT
+    [void][ProofSnipUxNative]::GetWindowRect($window, [ref]$rect)
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    $bitmap = New-Object Drawing.Bitmap($width, $height)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+    $graphics.Dispose()
+    $bitmap.Save($path, [Drawing.Imaging.ImageFormat]::Png)
+    $bitmap.Dispose()
+}
+
 function Copy-ClipboardBackup {
     $copy = New-Object Windows.Forms.DataObject
     try {
@@ -223,11 +244,12 @@ try {
     Start-Sleep -Milliseconds 300
 
     # Enter the real annotation workspace from the latest-capture card.
-    Click-Relative $workspace 300 688
+    Click-Normalized $workspace 0.685 0.935
     Start-Sleep -Milliseconds 500
+    Save-WindowScreenshot $workspace $ScreenshotPath
     [void][ProofSnipUxNative]::SetForegroundWindow($workspace)
     Send-Key 0x31
-    Click-Relative $workspace 560 410
+    Click-Normalized $workspace 0.50 0.55
     $clipboardBefore = [ProofSnipUxNative]::GetClipboardSequenceNumber()
     Send-Key 0x0D
     $annotated = Wait-ClipboardImageChange $clipboardBefore 5000
@@ -244,7 +266,9 @@ try {
 
     # Pin the annotated capture and verify that the real secondary viewport is topmost.
     $workspace = Wait-Workspace ([uint32]$process.Id) 5000
-    Click-Relative $workspace 388 688
+    [ProofSnipUxNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 400
+    Click-Normalized $workspace 0.582 0.432
     $pin = [IntPtr]::Zero
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.ElapsedMilliseconds -lt 5000) {
@@ -266,11 +290,21 @@ try {
     Start-Sleep -Milliseconds 300
 
     # Toggle the visible startup control and observe the actual current-user Run value.
+    [void][ProofSnipUxNative]::SetForegroundWindow($workspace)
+    [ProofSnipUxNative]::mouse_event(0x0800, 0, 0, 4294955296, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 700
     $expectedAfterFirstToggle = -not $originalStartupExists
-    Click-Relative $workspace 43 295
-    Start-Sleep -Milliseconds 350
+    # Click the label rather than the small checkbox glyph so the public hit target is exercised.
+    Click-Normalized $workspace 0.17 0.844
     $startupAfterToggle = $null
-    try { $startupAfterToggle = [string](Get-ItemPropertyValue -Path $runKey -Name $valueName -ErrorAction Stop) } catch {}
+    $startupTimer = [Diagnostics.Stopwatch]::StartNew()
+    while ($startupTimer.ElapsedMilliseconds -lt 3000) {
+        $startupAfterToggle = $null
+        try { $startupAfterToggle = [string](Get-ItemPropertyValue -Path $runKey -Name $valueName -ErrorAction Stop) } catch {}
+        if (($expectedAfterFirstToggle -and $null -ne $startupAfterToggle -and $startupAfterToggle -match '--background') -or
+            (-not $expectedAfterFirstToggle -and $null -eq $startupAfterToggle)) { break }
+        Start-Sleep -Milliseconds 50
+    }
     if ($expectedAfterFirstToggle) {
         if ($null -eq $startupAfterToggle -or $startupAfterToggle -notmatch '--background') {
             throw 'Startup checkbox did not create the expected Run value'
@@ -278,8 +312,20 @@ try {
     } elseif ($null -ne $startupAfterToggle) {
         throw 'Startup checkbox did not remove the existing Run value'
     }
-    Click-Relative $workspace 43 295
-    Start-Sleep -Milliseconds 350
+    Click-Normalized $workspace 0.17 0.844
+    $restoredStartupValue = $null
+    $startupTimer.Restart()
+    while ($startupTimer.ElapsedMilliseconds -lt 3000) {
+        $restoredStartupValue = $null
+        try { $restoredStartupValue = [string](Get-ItemPropertyValue -Path $runKey -Name $valueName -ErrorAction Stop) } catch {}
+        if (($originalStartupExists -and $restoredStartupValue -eq $originalStartupValue) -or
+            (-not $originalStartupExists -and $null -eq $restoredStartupValue)) { break }
+        Start-Sleep -Milliseconds 50
+    }
+    if (($originalStartupExists -and $restoredStartupValue -ne $originalStartupValue) -or
+        (-not $originalStartupExists -and $null -ne $restoredStartupValue)) {
+        throw 'Startup checkbox did not restore the original Run value'
+    }
     $results.startup_toggle = [ordered]@{
         original_enabled = $originalStartupExists
         toggled_enabled = $expectedAfterFirstToggle

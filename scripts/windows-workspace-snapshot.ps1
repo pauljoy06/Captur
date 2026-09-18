@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExePath,
-    [Parameter(Mandatory = $true)][string]$ScreenshotPath
+    [Parameter(Mandatory = $true)][string]$ScreenshotPath,
+    [switch]$ScrollToBottom
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +18,8 @@ public static class ProofSnipWorkspaceNative {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     public static IntPtr FindLargestVisibleWindow(uint processId) {
         IntPtr result = IntPtr.Zero;
         long largest = -1;
@@ -48,7 +51,7 @@ function Send-Chord([byte]$key) {
 $backup = [Windows.Forms.Clipboard]::GetDataObject()
 $process = $null
 try {
-    $process = Start-Process -FilePath $ExePath -ArgumentList '--background' -PassThru
+    $process = Start-Process -FilePath $ExePath -PassThru
     Start-Sleep -Seconds 3
     Send-Chord 0x37
     Start-Sleep -Seconds 2
@@ -58,6 +61,11 @@ try {
     if ($window -eq [IntPtr]::Zero) { throw 'ProofSnip workspace did not become visible' }
     [ProofSnipWorkspaceNative+RECT]$rect = New-Object ProofSnipWorkspaceNative+RECT
     [void][ProofSnipWorkspaceNative]::GetWindowRect($window, [ref]$rect)
+    if ($ScrollToBottom) {
+        [void][ProofSnipWorkspaceNative]::SetCursorPos(($rect.Left + $rect.Right) / 2, ($rect.Top + $rect.Bottom) / 2)
+        [ProofSnipWorkspaceNative]::mouse_event(0x0800, 0, 0, 4294955296, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+    }
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     $bitmap = New-Object Drawing.Bitmap($width, $height)

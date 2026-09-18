@@ -101,6 +101,14 @@ function Click-Relative([IntPtr]$window, [int]$x, [int]$y) {
     Start-Sleep -Milliseconds 180
 }
 
+function Click-Normalized([IntPtr]$window, [double]$x, [double]$y) {
+    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
+    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    Click-Relative $window ([int]($width * $x)) ([int]($height * $y))
+}
+
 function Replace-Text([IntPtr]$window, [int]$x, [int]$y, [string]$text) {
     [void][ProofSnipEvidenceNative]::SetForegroundWindow($window)
     Click-Relative $window $x $y
@@ -110,11 +118,31 @@ function Replace-Text([IntPtr]$window, [int]$x, [int]$y, [string]$text) {
     Start-Sleep -Milliseconds 150
 }
 
+function Replace-Text-Normalized([IntPtr]$window, [double]$x, [double]$y, [string]$text) {
+    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
+    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    Replace-Text $window ([int](($rect.Right - $rect.Left) * $x)) ([int](($rect.Bottom - $rect.Top) * $y)) $text
+}
+
 function Select-Combo-Item([IntPtr]$window, [int]$x, [int]$y, [int]$index) {
     [void][ProofSnipEvidenceNative]::SetForegroundWindow($window)
     Click-Relative $window $x $y
     # The observed egui popup centers its rows 32 px below the combo center, at 27 px steps.
     Click-Relative $window $x ($y + 32 + (27 * $index))
+    Start-Sleep -Milliseconds 150
+}
+
+function Select-Combo-Item-Normalized([IntPtr]$window, [double]$x, [double]$y, [int]$index) {
+    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
+    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    $relativeX = [int]($width * $x)
+    $relativeY = [int]($height * $y)
+    [void][ProofSnipEvidenceNative]::SetForegroundWindow($window)
+    Click-Relative $window $relativeX $relativeY
+    $scale = $height / 900.0
+    Click-Relative $window $relativeX ([int]($relativeY + (32 * $scale) + (27 * $scale * $index)))
     Start-Sleep -Milliseconds 150
 }
 
@@ -167,27 +195,30 @@ try {
     [void][ProofSnipEvidenceNative]::SetForegroundWindow($workspace)
     Start-Sleep -Milliseconds 500
 
-    # The workspace is deliberately normalized by ProofSnip to 1120x760. These clicks target the
-    # visible latest-capture action row, then the scrolled evidence controls in that fixed layout.
-    Click-Relative $workspace 98 688
-    Click-Relative $workspace 98 688
+    # The DPI-aware workspace keeps the same logical layout across scale factors. Normalized clicks
+    # target the visible latest-capture action row, then the scrolled evidence controls.
+    Click-Normalized $workspace 0.575 0.935
+    Click-Normalized $workspace 0.575 0.935
     [ProofSnipEvidenceNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500
 
-    Replace-Text $workspace 210 286 'Order total deletion evidence'
-    Replace-Text $workspace 210 320 'Delete a line item, verify the total, then refresh.'
-    Replace-Text $workspace 680 440 'Before deleting the line item.'
-    Select-Combo-Item $workspace 410 404 1
-    Replace-Text $workspace 680 626 'After refresh the correct total is displayed.'
-    Select-Combo-Item $workspace 410 590 3
+    Replace-Text-Normalized $workspace 0.50 0.64 'Order total deletion evidence'
+    Replace-Text-Normalized $workspace 0.50 0.70 'Delete a line item, verify the total, then refresh.'
+
+    [ProofSnipEvidenceNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+    Replace-Text-Normalized $workspace 0.62 0.46 'Before deleting the line item.'
+    Select-Combo-Item-Normalized $workspace 0.895 0.377 1
+    Replace-Text-Normalized $workspace 0.62 0.745 'After refresh the correct total is displayed.'
+    Select-Combo-Item-Normalized $workspace 0.895 0.664 3
 
     # Move the second capture up. This exercises ordering through the real evidence UI.
-    Click-Relative $workspace 282 663
+    Click-Normalized $workspace 0.32 0.827
     Start-Sleep -Milliseconds 300
     Save-WindowScreenshot $workspace $ScreenshotPath
 
     $exportStarted = [Diagnostics.Stopwatch]::StartNew()
-    Click-Relative $workspace 1040 80
+    Click-Normalized $workspace 0.895 0.105
     $dialog = [IntPtr]::Zero
     while ($exportStarted.ElapsedMilliseconds -lt 10000) {
         $dialog = [ProofSnipEvidenceNative]::FindVisibleWindowByTitle([uint32]$process.Id, 'Export ProofSnip Evidence')
