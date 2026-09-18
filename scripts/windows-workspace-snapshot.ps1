@@ -10,7 +10,7 @@ Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
-public static class ProofSnipWorkspaceNative {
+public static class CapturWorkspaceNative {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     public delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
@@ -40,12 +40,12 @@ public static class ProofSnipWorkspaceNative {
 '@
 
 function Send-Chord([byte]$key) {
-    [ProofSnipWorkspaceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipWorkspaceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipWorkspaceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipWorkspaceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [ProofSnipWorkspaceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
-    [ProofSnipWorkspaceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
 $backup = [Windows.Forms.Clipboard]::GetDataObject()
@@ -57,13 +57,13 @@ try {
     Start-Sleep -Seconds 2
     Send-Chord 0x36
     Start-Sleep -Seconds 2
-    $window = [ProofSnipWorkspaceNative]::FindLargestVisibleWindow([uint32]$process.Id)
-    if ($window -eq [IntPtr]::Zero) { throw 'ProofSnip workspace did not become visible' }
-    [ProofSnipWorkspaceNative+RECT]$rect = New-Object ProofSnipWorkspaceNative+RECT
-    [void][ProofSnipWorkspaceNative]::GetWindowRect($window, [ref]$rect)
+    $window = [CapturWorkspaceNative]::FindLargestVisibleWindow([uint32]$process.Id)
+    if ($window -eq [IntPtr]::Zero) { throw 'Captur workspace did not become visible' }
+    [CapturWorkspaceNative+RECT]$rect = New-Object CapturWorkspaceNative+RECT
+    [void][CapturWorkspaceNative]::GetWindowRect($window, [ref]$rect)
     if ($ScrollToBottom) {
-        [void][ProofSnipWorkspaceNative]::SetCursorPos(($rect.Left + $rect.Right) / 2, ($rect.Top + $rect.Bottom) / 2)
-        [ProofSnipWorkspaceNative]::mouse_event(0x0800, 0, 0, 4294955296, [UIntPtr]::Zero)
+        [void][CapturWorkspaceNative]::SetCursorPos(($rect.Left + $rect.Right) / 2, ($rect.Top + $rect.Bottom) / 2)
+        [CapturWorkspaceNative]::mouse_event(0x0800, 0, 0, 4294955296, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 500
     }
     $width = $rect.Right - $rect.Left

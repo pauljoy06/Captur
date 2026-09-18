@@ -13,7 +13,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class ProofSnipEvidenceNative {
+public static class CapturEvidenceNative {
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     public delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
@@ -64,53 +64,53 @@ public static class ProofSnipEvidenceNative {
 }
 '@
 
-[void][ProofSnipEvidenceNative]::SetProcessDpiAwarenessContext([IntPtr](-4))
+[void][CapturEvidenceNative]::SetProcessDpiAwarenessContext([IntPtr](-4))
 
 function Send-Chord([byte]$key) {
-    [ProofSnipEvidenceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipEvidenceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipEvidenceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipEvidenceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [ProofSnipEvidenceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
-    [ProofSnipEvidenceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
 function Wait-Workspace([uint32]$processId, [int]$timeoutMs) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.ElapsedMilliseconds -lt $timeoutMs) {
-        $window = [ProofSnipEvidenceNative]::FindLargestVisibleWindow($processId)
+        $window = [CapturEvidenceNative]::FindLargestVisibleWindow($processId)
         if ($window -ne [IntPtr]::Zero) {
-            [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
-            [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+            [CapturEvidenceNative+RECT]$rect = New-Object CapturEvidenceNative+RECT
+            [void][CapturEvidenceNative]::GetWindowRect($window, [ref]$rect)
             if (($rect.Right - $rect.Left) -ge 1000 -and ($rect.Bottom - $rect.Top) -ge 700) {
                 return $window
             }
         }
         Start-Sleep -Milliseconds 10
     }
-    throw 'ProofSnip workspace did not become visible at its expected size'
+    throw 'Captur workspace did not become visible at its expected size'
 }
 
 function Click-Relative([IntPtr]$window, [int]$x, [int]$y) {
-    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
-    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
-    [void][ProofSnipEvidenceNative]::SetCursorPos($rect.Left + $x, $rect.Top + $y)
+    [CapturEvidenceNative+RECT]$rect = New-Object CapturEvidenceNative+RECT
+    [void][CapturEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    [void][CapturEvidenceNative]::SetCursorPos($rect.Left + $x, $rect.Top + $y)
     Start-Sleep -Milliseconds 50
-    [ProofSnipEvidenceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipEvidenceNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 180
 }
 
 function Click-Normalized([IntPtr]$window, [double]$x, [double]$y) {
-    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
-    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    [CapturEvidenceNative+RECT]$rect = New-Object CapturEvidenceNative+RECT
+    [void][CapturEvidenceNative]::GetWindowRect($window, [ref]$rect)
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     Click-Relative $window ([int]($width * $x)) ([int]($height * $y))
 }
 
 function Replace-Text([IntPtr]$window, [int]$x, [int]$y, [string]$text) {
-    [void][ProofSnipEvidenceNative]::SetForegroundWindow($window)
+    [void][CapturEvidenceNative]::SetForegroundWindow($window)
     Click-Relative $window $x $y
     [Windows.Forms.SendKeys]::SendWait('^a')
     [Windows.Forms.Clipboard]::SetText($text)
@@ -119,13 +119,13 @@ function Replace-Text([IntPtr]$window, [int]$x, [int]$y, [string]$text) {
 }
 
 function Replace-Text-Normalized([IntPtr]$window, [double]$x, [double]$y, [string]$text) {
-    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
-    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    [CapturEvidenceNative+RECT]$rect = New-Object CapturEvidenceNative+RECT
+    [void][CapturEvidenceNative]::GetWindowRect($window, [ref]$rect)
     Replace-Text $window ([int](($rect.Right - $rect.Left) * $x)) ([int](($rect.Bottom - $rect.Top) * $y)) $text
 }
 
 function Select-Combo-Item([IntPtr]$window, [int]$x, [int]$y, [int]$index) {
-    [void][ProofSnipEvidenceNative]::SetForegroundWindow($window)
+    [void][CapturEvidenceNative]::SetForegroundWindow($window)
     Click-Relative $window $x $y
     # The observed egui popup centers its rows 32 px below the combo center, at 27 px steps.
     Click-Relative $window $x ($y + 32 + (27 * $index))
@@ -133,13 +133,13 @@ function Select-Combo-Item([IntPtr]$window, [int]$x, [int]$y, [int]$index) {
 }
 
 function Select-Combo-Item-Normalized([IntPtr]$window, [double]$x, [double]$y, [int]$index) {
-    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
-    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    [CapturEvidenceNative+RECT]$rect = New-Object CapturEvidenceNative+RECT
+    [void][CapturEvidenceNative]::GetWindowRect($window, [ref]$rect)
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     $relativeX = [int]($width * $x)
     $relativeY = [int]($height * $y)
-    [void][ProofSnipEvidenceNative]::SetForegroundWindow($window)
+    [void][CapturEvidenceNative]::SetForegroundWindow($window)
     Click-Relative $window $relativeX $relativeY
     $scale = $height / 900.0
     Click-Relative $window $relativeX ([int]($relativeY + (32 * $scale) + (27 * $scale * $index)))
@@ -147,8 +147,8 @@ function Select-Combo-Item-Normalized([IntPtr]$window, [double]$x, [double]$y, [
 }
 
 function Save-WindowScreenshot([IntPtr]$window, [string]$path) {
-    [ProofSnipEvidenceNative+RECT]$rect = New-Object ProofSnipEvidenceNative+RECT
-    [void][ProofSnipEvidenceNative]::GetWindowRect($window, [ref]$rect)
+    [CapturEvidenceNative+RECT]$rect = New-Object CapturEvidenceNative+RECT
+    [void][CapturEvidenceNative]::GetWindowRect($window, [ref]$rect)
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     $bitmap = New-Object Drawing.Bitmap($width, $height)
@@ -179,8 +179,8 @@ function Copy-ClipboardBackup {
 $results = [ordered]@{}
 $backup = Copy-ClipboardBackup
 $backupFormats = @($backup.GetFormats($false))
-[ProofSnipEvidenceNative+POINT]$originalCursor = New-Object ProofSnipEvidenceNative+POINT
-[void][ProofSnipEvidenceNative]::GetCursorPos([ref]$originalCursor)
+[CapturEvidenceNative+POINT]$originalCursor = New-Object CapturEvidenceNative+POINT
+[void][CapturEvidenceNative]::GetCursorPos([ref]$originalCursor)
 $process = $null
 
 try {
@@ -192,20 +192,20 @@ try {
     Start-Sleep -Seconds 2
     Send-Chord 0x36
     $workspace = Wait-Workspace ([uint32]$process.Id) 10000
-    [void][ProofSnipEvidenceNative]::SetForegroundWindow($workspace)
+    [void][CapturEvidenceNative]::SetForegroundWindow($workspace)
     Start-Sleep -Milliseconds 500
 
     # The DPI-aware workspace keeps the same logical layout across scale factors. Normalized clicks
     # target the visible latest-capture action row, then the scrolled evidence controls.
     Click-Normalized $workspace 0.575 0.935
     Click-Normalized $workspace 0.575 0.935
-    [ProofSnipEvidenceNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500
 
     Replace-Text-Normalized $workspace 0.50 0.64 'Order total deletion evidence'
     Replace-Text-Normalized $workspace 0.50 0.70 'Delete a line item, verify the total, then refresh.'
 
-    [ProofSnipEvidenceNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500
     Replace-Text-Normalized $workspace 0.62 0.46 'Before deleting the line item.'
     Select-Combo-Item-Normalized $workspace 0.895 0.377 1
@@ -221,13 +221,13 @@ try {
     Click-Normalized $workspace 0.895 0.105
     $dialog = [IntPtr]::Zero
     while ($exportStarted.ElapsedMilliseconds -lt 10000) {
-        $dialog = [ProofSnipEvidenceNative]::FindVisibleWindowByTitle([uint32]$process.Id, 'Export ProofSnip Evidence')
+        $dialog = [CapturEvidenceNative]::FindVisibleWindowByTitle([uint32]$process.Id, 'Export Captur Evidence')
         if ($dialog -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 20
     }
     if ($dialog -eq [IntPtr]::Zero) { throw 'PDF save dialog did not appear' }
 
-    [void][ProofSnipEvidenceNative]::SetForegroundWindow($dialog)
+    [void][CapturEvidenceNative]::SetForegroundWindow($dialog)
     Start-Sleep -Milliseconds 200
     [Windows.Forms.SendKeys]::SendWait('^a')
     [Windows.Forms.Clipboard]::SetText($PdfPath)
@@ -256,7 +256,7 @@ try {
     $results.workspace_screenshot = $ScreenshotPath
     $results.evidence_acceptance = 'passed'
 } finally {
-    [void][ProofSnipEvidenceNative]::SetCursorPos($originalCursor.X, $originalCursor.Y)
+    [void][CapturEvidenceNative]::SetCursorPos($originalCursor.X, $originalCursor.Y)
     if ($null -ne $process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
     }

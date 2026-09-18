@@ -231,7 +231,7 @@ pub fn sanitize_filename(name: &str) -> String {
 pub fn default_pdf_filename(session_name: &str) -> String {
     let sanitized = sanitize_filename(session_name);
     if sanitized.is_empty() || sanitized == "Evidence-Session" {
-        format!("ProofSnip-Evidence-{}.pdf", now_unix_ms())
+        format!("Captur-Evidence-{}.pdf", now_unix_ms())
     } else {
         format!("{sanitized}.pdf")
     }

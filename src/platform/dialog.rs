@@ -17,7 +17,7 @@ pub fn choose_pdf_path(default_filename: &str) -> Result<Option<PathBuf>, String
         "pdf",
         "PDF document",
         "*.pdf",
-        "Export ProofSnip Evidence",
+        "Export Captur Evidence",
     )
 }
 
@@ -27,7 +27,7 @@ pub fn choose_png_path(default_filename: &str) -> Result<Option<PathBuf>, String
         "png",
         "PNG image",
         "*.png",
-        "Save ProofSnip Capture",
+        "Save Captur Capture",
     )
 }
 

@@ -31,7 +31,7 @@ pub const RADIUS_MD: u8 = 9;
 pub const RADIUS_LG: u8 = 13;
 pub const CONTROL_HEIGHT: f32 = 34.0;
 
-/// Installs ProofSnip's coherent dark appearance for both explicitly dark and active UI.
+/// Installs Captur's coherent dark appearance for both explicitly dark and active UI.
 pub fn apply(context: &egui::Context) {
     let mut style = (*context.style_of(Theme::Dark)).clone();
     let mut visuals = Visuals::dark();

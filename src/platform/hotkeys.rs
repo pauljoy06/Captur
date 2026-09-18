@@ -33,7 +33,7 @@ impl HotkeyReceiver {
     pub fn start(context: egui::Context) -> Self {
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
-            .name("proofsnip-hotkeys".into())
+            .name("captur-hotkeys".into())
             .spawn(move || {
                 // Safety: this thread owns both thread-level hotkey registrations and its message
                 // loop. The registrations are released before the thread exits.

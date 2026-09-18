@@ -38,7 +38,7 @@ use windows::{
 
 use crate::capture::region::{PixelPoint, PixelRect};
 
-pub const WINDOW_TITLE: &str = "ProofSnip";
+pub const WINDOW_TITLE: &str = "Captur";
 
 pub struct OverlayBoundsGuard {
     active: Arc<AtomicBool>,
@@ -52,7 +52,7 @@ impl OverlayBoundsGuard {
         let active = Arc::new(AtomicBool::new(true));
         let worker_active = active.clone();
         let worker = thread::Builder::new()
-            .name("proofsnip-overlay-bounds".into())
+            .name("captur-overlay-bounds".into())
             .spawn(move || {
                 let hwnd = HWND(raw_window as *mut core::ffi::c_void);
                 while worker_active.load(Ordering::Acquire) {
@@ -90,8 +90,7 @@ pub fn configure_process() -> eframe::Result<()> {
 fn app_window() -> Result<HWND, String> {
     // Safety: static UTF-16 title string remains valid for the duration of the call.
     unsafe {
-        FindWindowW(None, w!("ProofSnip"))
-            .map_err(|error| format!("ProofSnip window not found: {error}"))
+        FindWindowW(None, w!("Captur")).map_err(|error| format!("Captur window not found: {error}"))
     }
 }
 

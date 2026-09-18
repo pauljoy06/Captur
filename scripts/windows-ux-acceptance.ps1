@@ -13,7 +13,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class ProofSnipUxNative {
+public static class CapturUxNative {
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     public delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
@@ -90,69 +90,84 @@ public static class ProofSnipUxNative {
 }
 '@
 
-[void][ProofSnipUxNative]::SetProcessDpiAwarenessContext([IntPtr](-4))
+[void][CapturUxNative]::SetProcessDpiAwarenessContext([IntPtr](-4))
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$valueName = 'ProofSnip'
+$valueName = 'Captur'
 
 function Send-Chord([byte]$key) {
-    [ProofSnipUxNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
 function Send-Key([byte]$key) {
-    [ProofSnipUxNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
 }
 
 function Wait-Workspace([uint32]$processId, [int]$timeoutMs) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.ElapsedMilliseconds -lt $timeoutMs) {
-        $window = [ProofSnipUxNative]::FindLargestVisibleWindow($processId)
+        $window = [CapturUxNative]::FindLargestVisibleWindow($processId)
         if ($window -ne [IntPtr]::Zero) {
-            [ProofSnipUxNative+RECT]$rect = New-Object ProofSnipUxNative+RECT
-            [void][ProofSnipUxNative]::GetWindowRect($window, [ref]$rect)
+            [CapturUxNative+RECT]$rect = New-Object CapturUxNative+RECT
+            [void][CapturUxNative]::GetWindowRect($window, [ref]$rect)
             if (($rect.Right - $rect.Left) -ge 1000 -and ($rect.Bottom - $rect.Top) -ge 700) {
                 return $window
             }
         }
         Start-Sleep -Milliseconds 10
     }
-    throw 'ProofSnip workspace did not become visible at its expected size'
+    throw 'Captur workspace did not become visible at its expected size'
 }
 
 function Wait-WindowVisibility([IntPtr]$window, [bool]$visible, [int]$timeoutMs) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.ElapsedMilliseconds -lt $timeoutMs) {
-        if ([ProofSnipUxNative]::IsWindowVisible($window) -eq $visible) { return }
+        if ([CapturUxNative]::IsWindowVisible($window) -eq $visible) { return }
         Start-Sleep -Milliseconds 10
     }
     throw "Window visibility did not become $visible"
 }
 
 function Click-Relative([IntPtr]$window, [int]$x, [int]$y) {
-    [ProofSnipUxNative+RECT]$rect = New-Object ProofSnipUxNative+RECT
-    [void][ProofSnipUxNative]::GetWindowRect($window, [ref]$rect)
-    [void][ProofSnipUxNative]::SetCursorPos($rect.Left + $x, $rect.Top + $y)
+    [CapturUxNative+RECT]$rect = New-Object CapturUxNative+RECT
+    [void][CapturUxNative]::GetWindowRect($window, [ref]$rect)
+    [void][CapturUxNative]::SetCursorPos($rect.Left + $x, $rect.Top + $y)
     Start-Sleep -Milliseconds 50
-    [ProofSnipUxNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    [ProofSnipUxNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 180
 }
 
 function Click-Normalized([IntPtr]$window, [double]$x, [double]$y) {
-    [ProofSnipUxNative+RECT]$rect = New-Object ProofSnipUxNative+RECT
-    [void][ProofSnipUxNative]::GetWindowRect($window, [ref]$rect)
+    [CapturUxNative+RECT]$rect = New-Object CapturUxNative+RECT
+    [void][CapturUxNative]::GetWindowRect($window, [ref]$rect)
     Click-Relative $window ([int](($rect.Right - $rect.Left) * $x)) ([int](($rect.Bottom - $rect.Top) * $y))
+}
+
+function Scroll-Workspace-To-Bottom([IntPtr]$window) {
+    [CapturUxNative+RECT]$rect = New-Object CapturUxNative+RECT
+    [void][CapturUxNative]::GetWindowRect($window, [ref]$rect)
+    [void][CapturUxNative]::SetForegroundWindow($window)
+    [void][CapturUxNative]::SetCursorPos(
+        [int](($rect.Left + $rect.Right) / 2),
+        [int](($rect.Top + $rect.Bottom) / 2)
+    )
+    for ($step = 0; $step -lt 3; $step++) {
+        [CapturUxNative]::mouse_event(0x0800, 0, 0, 4294955296, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 120
+    }
+    Start-Sleep -Milliseconds 500
 }
 
 function Save-WindowScreenshot([IntPtr]$window, [string]$path) {
     if ([string]::IsNullOrWhiteSpace($path)) { return }
-    [ProofSnipUxNative+RECT]$rect = New-Object ProofSnipUxNative+RECT
-    [void][ProofSnipUxNative]::GetWindowRect($window, [ref]$rect)
+    [CapturUxNative+RECT]$rect = New-Object CapturUxNative+RECT
+    [void][CapturUxNative]::GetWindowRect($window, [ref]$rect)
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     $bitmap = New-Object Drawing.Bitmap($width, $height)
@@ -204,7 +219,7 @@ function Get-ClipboardImageInfo {
 function Wait-ClipboardImageChange([uint32]$before, [int]$timeoutMs) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.ElapsedMilliseconds -lt $timeoutMs) {
-        if ([ProofSnipUxNative]::GetClipboardSequenceNumber() -ne $before) {
+        if ([CapturUxNative]::GetClipboardSequenceNumber() -ne $before) {
             return Get-ClipboardImageInfo
         }
         Start-Sleep -Milliseconds 5
@@ -215,8 +230,8 @@ function Wait-ClipboardImageChange([uint32]$before, [int]$timeoutMs) {
 $results = [ordered]@{}
 $backup = Copy-ClipboardBackup
 $backupFormats = @($backup.GetFormats($false))
-[ProofSnipUxNative+POINT]$originalCursor = New-Object ProofSnipUxNative+POINT
-[void][ProofSnipUxNative]::GetCursorPos([ref]$originalCursor)
+[CapturUxNative+POINT]$originalCursor = New-Object CapturUxNative+POINT
+[void][CapturUxNative]::GetCursorPos([ref]$originalCursor)
 $originalStartupExists = $false
 $originalStartupValue = $null
 try {
@@ -231,26 +246,26 @@ $process = $null
 try {
     $process = Start-Process -FilePath $ExePath -ArgumentList '--background' -PassThru
     Start-Sleep -Seconds 3
-    $tray = [ProofSnipUxNative]::FindWindow([uint32]$process.Id, 'ProofSnip Tray', 'ProofSnipTrayWindow', $false)
-    if ($tray -eq [IntPtr]::Zero) { throw 'ProofSnip tray window was not created' }
+    $tray = [CapturUxNative]::FindWindow([uint32]$process.Id, 'Captur Tray', 'CapturTrayWindow', $false)
+    if ($tray -eq [IntPtr]::Zero) { throw 'Captur tray window was not created' }
     $results.tray_window_created = $true
 
     Send-Chord 0x37
     Start-Sleep -Seconds 2
     $source = Get-ClipboardImageInfo
-    [void][ProofSnipUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]1), [IntPtr]::Zero)
+    [void][CapturUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]1), [IntPtr]::Zero)
     $workspace = Wait-Workspace ([uint32]$process.Id) 10000
-    [void][ProofSnipUxNative]::SetForegroundWindow($workspace)
+    [void][CapturUxNative]::SetForegroundWindow($workspace)
     Start-Sleep -Milliseconds 300
 
     # Enter the real annotation workspace from the latest-capture card.
     Click-Normalized $workspace 0.685 0.935
     Start-Sleep -Milliseconds 500
     Save-WindowScreenshot $workspace $ScreenshotPath
-    [void][ProofSnipUxNative]::SetForegroundWindow($workspace)
+    [void][CapturUxNative]::SetForegroundWindow($workspace)
     Send-Key 0x31
     Click-Normalized $workspace 0.50 0.55
-    $clipboardBefore = [ProofSnipUxNative]::GetClipboardSequenceNumber()
+    $clipboardBefore = [CapturUxNative]::GetClipboardSequenceNumber()
     Send-Key 0x0D
     $annotated = Wait-ClipboardImageChange $clipboardBefore 5000
     if ($annotated.width -ne $source.width -or $annotated.height -ne $source.height) {
@@ -266,33 +281,31 @@ try {
 
     # Pin the annotated capture and verify that the real secondary viewport is topmost.
     $workspace = Wait-Workspace ([uint32]$process.Id) 5000
-    [ProofSnipUxNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
+    [CapturUxNative]::mouse_event(0x0800, 0, 0, 4294966096, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 400
     Click-Normalized $workspace 0.582 0.432
     $pin = [IntPtr]::Zero
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.ElapsedMilliseconds -lt 5000) {
-        $pin = [ProofSnipUxNative]::FindLargestSecondaryVisibleWindow([uint32]$process.Id, $workspace)
+        $pin = [CapturUxNative]::FindLargestSecondaryVisibleWindow([uint32]$process.Id, $workspace)
         if ($pin -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 20
     }
     if ($pin -eq [IntPtr]::Zero) { throw 'Pinned screenshot viewport did not appear' }
-    $extendedStyle = [ProofSnipUxNative]::GetWindowLongPtr($pin, -20).ToInt64()
+    $extendedStyle = [CapturUxNative]::GetWindowLongPtr($pin, -20).ToInt64()
     if (($extendedStyle -band 0x8) -eq 0) { throw 'Pinned screenshot viewport is not topmost' }
-    [ProofSnipUxNative+RECT]$pinRect = New-Object ProofSnipUxNative+RECT
-    [void][ProofSnipUxNative]::GetWindowRect($pin, [ref]$pinRect)
+    [CapturUxNative+RECT]$pinRect = New-Object CapturUxNative+RECT
+    [void][CapturUxNative]::GetWindowRect($pin, [ref]$pinRect)
     $results.pin = [ordered]@{
         visible = $true
         topmost = $true
         bounds = "$($pinRect.Left),$($pinRect.Top) $(($pinRect.Right-$pinRect.Left))x$(($pinRect.Bottom-$pinRect.Top))"
     }
-    [void][ProofSnipUxNative]::PostMessage($pin, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    [void][CapturUxNative]::PostMessage($pin, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300
 
     # Toggle the visible startup control and observe the actual current-user Run value.
-    [void][ProofSnipUxNative]::SetForegroundWindow($workspace)
-    [ProofSnipUxNative]::mouse_event(0x0800, 0, 0, 4294955296, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 700
+    Scroll-Workspace-To-Bottom $workspace
     $expectedAfterFirstToggle = -not $originalStartupExists
     # Click the label rather than the small checkbox glyph so the public hit target is exercised.
     Click-Normalized $workspace 0.17 0.844
@@ -335,22 +348,22 @@ try {
 
     # Close the workspace, prove the process remains resident, show it via the tray command,
     # close it again, then use the real tray command to exit cleanly.
-    [void][ProofSnipUxNative]::PostMessage($workspace, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    [void][CapturUxNative]::PostMessage($workspace, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     Wait-WindowVisibility $workspace $false 5000
-    if ($process.HasExited) { throw 'ProofSnip exited instead of closing to the tray' }
-    [void][ProofSnipUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]1), [IntPtr]::Zero)
+    if ($process.HasExited) { throw 'Captur exited instead of closing to the tray' }
+    [void][CapturUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]1), [IntPtr]::Zero)
     $workspace = Wait-Workspace ([uint32]$process.Id) 5000
     $results.close_to_tray = $true
     $results.tray_show_workspace = $true
 
-    [void][ProofSnipUxNative]::PostMessage($workspace, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    [void][CapturUxNative]::PostMessage($workspace, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     Wait-WindowVisibility $workspace $false 5000
-    [void][ProofSnipUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]2), [IntPtr]::Zero)
-    if (-not $process.WaitForExit(5000)) { throw 'Tray Exit did not stop ProofSnip' }
+    [void][CapturUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]2), [IntPtr]::Zero)
+    if (-not $process.WaitForExit(5000)) { throw 'Tray Exit did not stop Captur' }
     $results.tray_exit = $true
     $results.ux_acceptance = 'passed'
 } finally {
-    [void][ProofSnipUxNative]::SetCursorPos($originalCursor.X, $originalCursor.Y)
+    [void][CapturUxNative]::SetCursorPos($originalCursor.X, $originalCursor.Y)
     if ($null -ne $process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
     }

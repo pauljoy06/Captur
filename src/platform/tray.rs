@@ -28,7 +28,7 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-const WINDOW_CLASS: PCWSTR = w!("ProofSnipTrayWindow");
+const WINDOW_CLASS: PCWSTR = w!("CapturTrayWindow");
 const TRAY_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const MENU_SHOW: usize = 1;
@@ -50,11 +50,11 @@ impl TrayReceiver {
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
 
         thread::Builder::new()
-            .name("proofsnip-tray".into())
+            .name("captur-tray".into())
             .spawn(move || {
                 let result = run_tray_thread(event_sender, egui_context, startup_sender);
                 if let Err(error) = result {
-                    eprintln!("ProofSnip tray thread stopped: {error}");
+                    eprintln!("Captur tray thread stopped: {error}");
                 }
             })
             .map_err(|error| format!("could not start tray thread: {error}"))?;
@@ -121,7 +121,7 @@ fn run_tray_thread(
         let window = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             WINDOW_CLASS,
-            w!("ProofSnip Tray"),
+            w!("Captur Tray"),
             WS_OVERLAPPED,
             0,
             0,
@@ -182,7 +182,7 @@ unsafe fn add_tray_icon(window: HWND) -> Result<(), String> {
         hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
         ..Default::default()
     };
-    write_wide_buffer(&mut data.szTip, "ProofSnip");
+    write_wide_buffer(&mut data.szTip, "Captur");
 
     // Safety: `data` is fully initialized, and `window` is owned by the calling tray thread.
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
@@ -271,7 +271,7 @@ unsafe fn show_context_menu(window: HWND) {
         Err(_) => return,
     };
 
-    let _ = unsafe { AppendMenuW(menu, MF_STRING, MENU_SHOW, w!("Show ProofSnip")) };
+    let _ = unsafe { AppendMenuW(menu, MF_STRING, MENU_SHOW, w!("Show Captur")) };
     let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, None) };
     let _ = unsafe { AppendMenuW(menu, MF_STRING, MENU_EXIT, w!("Exit")) };
 

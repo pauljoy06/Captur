@@ -90,7 +90,7 @@ struct PinnedCapture {
     height: u32,
 }
 
-pub struct ProofSnipApp {
+pub struct CapturApp {
     mode: AppMode,
     hotkeys: HotkeyReceiver,
     session: EvidenceSession,
@@ -129,7 +129,7 @@ pub struct ProofSnipApp {
     overlay_bounds_guard: Option<windows::OverlayBoundsGuard>,
 }
 
-impl ProofSnipApp {
+impl CapturApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
         let capture_initialization_error = dxgi::initialize().err();
@@ -1372,12 +1372,12 @@ impl ProofSnipApp {
             components::section_header(
                 ui,
                 "Startup",
-                Some("Keep ProofSnip ready without opening the workspace"),
+                Some("Keep Captur ready without opening the workspace"),
             );
             ui.add_space(theme::SPACE_3);
             let response = ui.checkbox(
                 &mut self.startup_enabled,
-                "Start ProofSnip when I sign in to Windows",
+                "Start Captur when I sign in to Windows",
             );
             if response.changed() {
                 requests.startup_change = Some(self.startup_enabled);
@@ -1441,7 +1441,7 @@ impl ProofSnipApp {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.heading(
-                                RichText::new("ProofSnip")
+                                RichText::new("Captur")
                                     .size(25.0)
                                     .strong()
                                     .color(theme::TEXT),
@@ -1577,7 +1577,7 @@ impl ProofSnipApp {
         if requests.unpin {
             self.pinned_capture = None;
             context.send_viewport_cmd_to(
-                egui::ViewportId::from_hash_of("proofsnip-pin"),
+                egui::ViewportId::from_hash_of("captur-pin"),
                 egui::ViewportCommand::Close,
             );
             self.status = "Pinned capture closed".into();
@@ -1586,9 +1586,9 @@ impl ProofSnipApp {
             match startup::set_enabled(enabled) {
                 Ok(()) => {
                     self.status = if enabled {
-                        "ProofSnip will start with Windows".into()
+                        "Captur will start with Windows".into()
                     } else {
-                        "ProofSnip removed from Windows startup".into()
+                        "Captur removed from Windows startup".into()
                     };
                 }
                 Err(error) => {
@@ -1622,13 +1622,13 @@ impl ProofSnipApp {
         let Some(frame) = self.last_capture.clone() else {
             return;
         };
-        let default_name = format!("ProofSnip-{}x{}.png", frame.width, frame.height);
+        let default_name = format!("Captur-{}x{}.png", frame.width, frame.height);
         match dialog::choose_png_path(&default_name) {
             Ok(Some(path)) => {
                 let sender = self.worker_sender.clone();
                 let repaint = context.clone();
                 thread::Builder::new()
-                    .name("proofsnip-png".into())
+                    .name("captur-png".into())
                     .spawn(move || {
                         let started = Instant::now();
                         let result = wic::encode_png(&frame, &path);
@@ -1667,7 +1667,7 @@ impl ProofSnipApp {
         self.export_in_progress = true;
         self.status = "Exporting PDF in background…".into();
         thread::Builder::new()
-            .name("proofsnip-pdf".into())
+            .name("captur-pdf".into())
             .spawn(move || {
                 let started = Instant::now();
                 let result = PdfExporter.export(&model, &path);
@@ -1685,7 +1685,7 @@ impl ProofSnipApp {
         let Some(pinned) = self.pinned_capture.clone() else {
             return;
         };
-        let viewport_id = egui::ViewportId::from_hash_of("proofsnip-pin");
+        let viewport_id = egui::ViewportId::from_hash_of("captur-pin");
         let max_width = 900.0_f32;
         let max_height = 700.0_f32;
         let scale = (max_width / pinned.width as f32)
@@ -1696,7 +1696,7 @@ impl ProofSnipApp {
         let close_requested = context.show_viewport_immediate(
             viewport_id,
             egui::ViewportBuilder::default()
-                .with_title("ProofSnip Pin")
+                .with_title("Captur Pin")
                 .with_inner_size(viewport_size)
                 .with_min_inner_size([180.0, 120.0])
                 .with_resizable(true)
@@ -1731,7 +1731,7 @@ impl ProofSnipApp {
     }
 }
 
-impl eframe::App for ProofSnipApp {
+impl eframe::App for CapturApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_hotkeys(context);
         self.poll_tray(context);
@@ -1754,7 +1754,7 @@ impl eframe::App for ProofSnipApp {
         {
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             windows::hide_window();
-            self.status = "ProofSnip is still running in the notification area".into();
+            self.status = "Captur is still running in the notification area".into();
         }
     }
 

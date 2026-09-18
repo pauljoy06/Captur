@@ -15,7 +15,7 @@ use windows::{
 };
 
 const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const VALUE_NAME: windows::core::PCWSTR = w!("ProofSnip");
+const VALUE_NAME: windows::core::PCWSTR = w!("Captur");
 
 struct OwnedKey(HKEY);
 
@@ -53,7 +53,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
             Ok(())
         } else {
             Err(status_error(
-                "could not remove ProofSnip from Windows startup",
+                "could not remove Captur from Windows startup",
                 status.0,
             ))
         };
@@ -72,7 +72,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(status_error(
-            "could not add ProofSnip to Windows startup",
+            "could not add Captur to Windows startup",
             status.0,
         ))
     }
@@ -99,7 +99,7 @@ fn executable_path() -> Result<String, String> {
     // Safety: buffer is writable and large enough for the documented Windows maximum path.
     let length = unsafe { GetModuleFileNameW(None, &mut buffer) } as usize;
     if length == 0 || length >= buffer.len() {
-        return Err("could not determine the ProofSnip executable path".into());
+        return Err("could not determine the Captur executable path".into());
     }
     Ok(String::from_utf16_lossy(&buffer[..length]))
 }

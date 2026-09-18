@@ -30,13 +30,13 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "ProofSnip",
+        "Captur",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::ProofSnipApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::CapturApp::new(cc)))),
     )
 }
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    eprintln!("ProofSnip is a Windows-only application. Build x86_64-pc-windows-msvc.");
+    eprintln!("Captur is a Windows-only application. Build x86_64-pc-windows-msvc.");
 }
