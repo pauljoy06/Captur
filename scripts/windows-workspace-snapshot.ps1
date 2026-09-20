@@ -41,10 +41,10 @@ public static class CapturWorkspaceNative {
 
 function Send-Chord([byte]$key) {
     [CapturWorkspaceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [CapturWorkspaceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
     [CapturWorkspaceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
     [CapturWorkspaceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [CapturWorkspaceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
+    [CapturWorkspaceNative]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [CapturWorkspaceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
@@ -53,9 +53,9 @@ $process = $null
 try {
     $process = Start-Process -FilePath $ExePath -PassThru
     Start-Sleep -Seconds 3
-    Send-Chord 0x37
+    Send-Chord 0x4D
     Start-Sleep -Seconds 2
-    Send-Chord 0x36
+    Send-Chord 0x57
     Start-Sleep -Seconds 2
     $window = [CapturWorkspaceNative]::FindLargestVisibleWindow([uint32]$process.Id)
     if ($window -eq [IntPtr]::Zero) { throw 'Captur workspace did not become visible' }

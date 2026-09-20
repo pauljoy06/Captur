@@ -68,10 +68,10 @@ public static class CapturEvidenceNative {
 
 function Send-Chord([byte]$key) {
     [CapturEvidenceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [CapturEvidenceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
     [CapturEvidenceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
     [CapturEvidenceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [CapturEvidenceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
+    [CapturEvidenceNative]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [CapturEvidenceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
@@ -188,9 +188,9 @@ try {
     $process = Start-Process -FilePath $ExePath -ArgumentList '--background' -PassThru
     Start-Sleep -Seconds 3
 
-    Send-Chord 0x37
+    Send-Chord 0x4D
     Start-Sleep -Seconds 2
-    Send-Chord 0x36
+    Send-Chord 0x57
     $workspace = Wait-Workspace ([uint32]$process.Id) 10000
     [void][CapturEvidenceNative]::SetForegroundWindow($workspace)
     Start-Sleep -Milliseconds 500

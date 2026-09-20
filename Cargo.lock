@@ -334,6 +334,7 @@ dependencies = [
  "eframe",
  "egui",
  "printpdf",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "windows",

@@ -1,28 +1,32 @@
 use std::{
+    fs::OpenOptions,
+    io::Write,
     sync::mpsc::{self, Receiver},
     thread,
 };
 
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey,
+        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
     },
     WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
 };
 
 const CAPTURE_REGION_ID: i32 = 0x5053_0001;
 const CAPTURE_SAME_REGION_ID: i32 = 0x5053_0002;
-const SHOW_WORKSPACE_ID: i32 = 0x5053_0003;
+const TOGGLE_WORKSPACE_ID: i32 = 0x5053_0003;
 const CAPTURE_MONITOR_ID: i32 = 0x5053_0004;
 const CAPTURE_ACTIVE_WINDOW_ID: i32 = 0x5053_0005;
+const CAPTURE_NOTE_ID: i32 = 0x5053_0006;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyEvent {
     CaptureRegion,
     CaptureSameRegion,
-    ShowWorkspace,
+    ToggleWorkspace,
     CaptureMonitor,
     CaptureActiveWindow,
+    CaptureNote,
 }
 
 pub struct HotkeyReceiver {
@@ -38,49 +42,30 @@ impl HotkeyReceiver {
                 // Safety: this thread owns both thread-level hotkey registrations and its message
                 // loop. The registrations are released before the thread exits.
                 unsafe {
-                    let modifiers = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
-                    if let Err(error) =
-                        RegisterHotKey(None, CAPTURE_REGION_ID, modifiers, b'4' as u32)
-                    {
-                        let _ =
-                            sender.send(Err(format!("could not register Ctrl+Shift+4: {error}")));
-                        context.request_repaint();
-                        return;
+                    let modifiers = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
+                    let registrations = [
+                        (CAPTURE_REGION_ID, b'S', "Ctrl+Alt+S"),
+                        (CAPTURE_SAME_REGION_ID, b'R', "Ctrl+Alt+R"),
+                        (TOGGLE_WORKSPACE_ID, b'W', "Ctrl+Alt+W"),
+                        (CAPTURE_MONITOR_ID, b'M', "Ctrl+Alt+M"),
+                        (CAPTURE_ACTIVE_WINDOW_ID, b'A', "Ctrl+Alt+A"),
+                        (CAPTURE_NOTE_ID, b'N', "Ctrl+Alt+N"),
+                    ];
+                    let mut registered_ids = Vec::with_capacity(registrations.len());
+                    for (id, key, label) in registrations {
+                        match RegisterHotKey(None, id, modifiers, key as u32) {
+                            Ok(()) => {
+                                diagnostic(&format!("registered {label} id={id:#x}"));
+                                registered_ids.push(id);
+                            }
+                            Err(error) => {
+                                diagnostic(&format!("failed {label} id={id:#x}: {error}"));
+                                let _ = sender
+                                    .send(Err(format!("could not register {label}: {error}")));
+                            }
+                        }
                     }
-                    if let Err(error) =
-                        RegisterHotKey(None, CAPTURE_SAME_REGION_ID, modifiers, b'5' as u32)
-                    {
-                        let _ = UnregisterHotKey(None, CAPTURE_REGION_ID);
-                        let _ =
-                            sender.send(Err(format!("could not register Ctrl+Shift+5: {error}")));
-                        context.request_repaint();
-                        return;
-                    }
-                    if let Err(error) =
-                        RegisterHotKey(None, SHOW_WORKSPACE_ID, modifiers, b'6' as u32)
-                    {
-                        let _ = UnregisterHotKey(None, CAPTURE_REGION_ID);
-                        let _ = UnregisterHotKey(None, CAPTURE_SAME_REGION_ID);
-                        let _ =
-                            sender.send(Err(format!("could not register Ctrl+Shift+6: {error}")));
-                        context.request_repaint();
-                        return;
-                    }
-                    if let Err(error) =
-                        RegisterHotKey(None, CAPTURE_MONITOR_ID, modifiers, b'7' as u32)
-                    {
-                        unregister_all();
-                        let _ =
-                            sender.send(Err(format!("could not register Ctrl+Shift+7: {error}")));
-                        context.request_repaint();
-                        return;
-                    }
-                    if let Err(error) =
-                        RegisterHotKey(None, CAPTURE_ACTIVE_WINDOW_ID, modifiers, b'8' as u32)
-                    {
-                        unregister_all();
-                        let _ =
-                            sender.send(Err(format!("could not register Ctrl+Shift+8: {error}")));
+                    if registered_ids.is_empty() {
                         context.request_repaint();
                         return;
                     }
@@ -88,24 +73,37 @@ impl HotkeyReceiver {
                     let mut message = MSG::default();
                     while GetMessageW(&mut message, None, 0, 0).0 > 0 {
                         if message.message == WM_HOTKEY {
+                            diagnostic(&format!("received WM_HOTKEY id={:#x}", message.wParam.0));
                             let event = match message.wParam.0 as i32 {
                                 CAPTURE_REGION_ID => Some(HotkeyEvent::CaptureRegion),
                                 CAPTURE_SAME_REGION_ID => Some(HotkeyEvent::CaptureSameRegion),
-                                SHOW_WORKSPACE_ID => Some(HotkeyEvent::ShowWorkspace),
+                                TOGGLE_WORKSPACE_ID => Some(HotkeyEvent::ToggleWorkspace),
                                 CAPTURE_MONITOR_ID => Some(HotkeyEvent::CaptureMonitor),
                                 CAPTURE_ACTIVE_WINDOW_ID => Some(HotkeyEvent::CaptureActiveWindow),
+                                CAPTURE_NOTE_ID => Some(HotkeyEvent::CaptureNote),
                                 _ => None,
                             };
                             if let Some(event) = event {
+                                diagnostic(&format!("dispatching {event:?}"));
                                 if sender.send(Ok(event)).is_err() {
+                                    diagnostic("hotkey receiver disconnected");
                                     break;
+                                }
+                                if !super::windows::is_workspace_visible() {
+                                    if super::windows::wake_for_hotkey() {
+                                        diagnostic("posted workspace wake for hotkey");
+                                    } else {
+                                        diagnostic("could not post workspace wake for hotkey");
+                                    }
                                 }
                                 context.request_repaint();
                             }
                         }
                     }
 
-                    unregister_all();
+                    for id in registered_ids {
+                        let _ = UnregisterHotKey(None, id);
+                    }
                 }
             })
             .expect("failed to create hotkey thread");
@@ -118,12 +116,11 @@ impl HotkeyReceiver {
     }
 }
 
-unsafe fn unregister_all() {
-    unsafe {
-        let _ = UnregisterHotKey(None, CAPTURE_REGION_ID);
-        let _ = UnregisterHotKey(None, CAPTURE_SAME_REGION_ID);
-        let _ = UnregisterHotKey(None, SHOW_WORKSPACE_ID);
-        let _ = UnregisterHotKey(None, CAPTURE_MONITOR_ID);
-        let _ = UnregisterHotKey(None, CAPTURE_ACTIVE_WINDOW_ID);
+fn diagnostic(message: &str) {
+    let Some(path) = std::env::var_os("CAPTUR_HOTKEY_LOG") else {
+        return;
+    };
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{message}");
     }
 }

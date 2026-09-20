@@ -5,11 +5,12 @@ Captur is a Windows 11 snipping and evidence-export application written in Rust.
 ## Current implementation
 
 - Resident global shortcuts:
-  - `Ctrl+Shift+4`: region capture
-  - `Ctrl+Shift+5`: capture the previous region again
-  - `Ctrl+Shift+6`: show the evidence workspace
-  - `Ctrl+Shift+7`: capture the monitor under the cursor
-  - `Ctrl+Shift+8`: capture the active window
+  - `Ctrl+Alt+S`: region capture
+  - `Ctrl+Alt+R`: capture the previous region again
+  - `Ctrl+Alt+W`: show or hide the evidence workspace
+  - `Ctrl+Alt+M`: capture the monitor under the cursor
+  - `Ctrl+Alt+A`: capture the active window
+  - `Ctrl+Alt+N`: region capture followed by the compact evidence-note prompt
 - Multi-adapter, multi-monitor DXGI Desktop Duplication capture.
 - Native-pixel virtual-desktop stitching, including negative monitor coordinates and output rotation.
 - Per-monitor-v2 DPI awareness and an egui overlay positioned in physical desktop coordinates.
@@ -150,12 +151,12 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 
 1. Launch `captur.exe`.
 2. Move focus to another Windows application.
-3. Press `Ctrl+Shift+4`.
+3. Press `Ctrl+Alt+S`.
 4. Drag a region and release the mouse.
 5. Immediately press `Ctrl+V` in Paint, Teams, an editor, or another bitmap-capable application.
-6. Press `Ctrl+Shift+5` and confirm the identical native-pixel region is copied.
-7. Press `Ctrl+Shift+7` over each monitor, then `Ctrl+Shift+8` with a normal window active.
-8. Press `Ctrl+Shift+6` to inspect the recorded timings.
+6. Press `Ctrl+Alt+R` and confirm the identical native-pixel region is copied.
+7. Press `Ctrl+Alt+M` over each monitor, then `Ctrl+Alt+A` with a normal window active.
+8. Press `Ctrl+Alt+W` to show the workspace and inspect the recorded timings. Press it again to hide the workspace.
 9. Choose **Annotate**, exercise `A`, `R`, `H`, `T`, `B`, and `1`, then press `Enter`. Confirm the annotated result is immediately pasteable.
 10. Choose **Pin latest**, switch to another application, and confirm the capture remains above normal windows without blocking input.
 11. Close the workspace, confirm Captur remains in the notification area, reopen it from the icon, and use the icon's **Exit** command when finished.

@@ -103,10 +103,10 @@ $valueName = 'Captur'
 
 function Send-Chord([byte]$key) {
     [CapturUxNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [CapturUxNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
     [CapturUxNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
     [CapturUxNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [CapturUxNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
+    [CapturUxNative]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [CapturUxNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
@@ -286,7 +286,7 @@ try {
         bounds = "$($trayRect.Left),$($trayRect.Top) $(($trayRect.Right-$trayRect.Left))x$(($trayRect.Bottom-$trayRect.Top))"
     }
 
-    Send-Chord 0x37
+    Send-Chord 0x4D
     Start-Sleep -Seconds 2
     $source = Get-ClipboardImageInfo
     [void][CapturUxNative]::PostMessage($tray, 0x0111, [UIntPtr]([uint64]1), [IntPtr]::Zero)

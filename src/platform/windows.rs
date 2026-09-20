@@ -1,44 +1,43 @@
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     thread,
     time::Duration,
 };
 
-use windows::{
-    Win32::{
-        Foundation::{HWND, POINT, RECT},
-        Graphics::{
-            Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
-            Gdi::{
-                GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
-                MonitorFromWindow,
-            },
-        },
-        System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
-        UI::{
-            HiDpi::{
-                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
-                SetProcessDpiAwarenessContext,
-            },
-            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
-            WindowsAndMessaging::{
-                FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetForegroundWindow, GetPhysicalCursorPos,
-                GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_HIDE, SW_SHOW,
-                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow,
-                SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-                WS_POPUP,
-            },
+use windows::Win32::{
+    Foundation::{HWND, LPARAM, POINT, RECT},
+    Graphics::{
+        Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
+        Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+            MonitorFromWindow,
         },
     },
-    core::w,
+    System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
+    UI::{
+        HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
+            SetProcessDpiAwarenessContext,
+        },
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
+        WindowsAndMessaging::{
+            EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetForegroundWindow, GetPhysicalCursorPos,
+            GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IsIconic,
+            IsWindowVisible, SW_HIDE, SW_SHOW, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+            SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+            ShowWindowAsync, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        },
+    },
 };
+use windows::core::BOOL;
 
 use crate::capture::region::{PixelPoint, PixelRect};
 
 pub const WINDOW_TITLE: &str = "Captur";
+static APP_WINDOW: OnceLock<usize> = OnceLock::new();
 
 pub struct OverlayBoundsGuard {
     active: Arc<AtomicBool>,
@@ -88,10 +87,52 @@ pub fn configure_process() -> eframe::Result<()> {
 }
 
 fn app_window() -> Result<HWND, String> {
-    // Safety: static UTF-16 title string remains valid for the duration of the call.
-    unsafe {
-        FindWindowW(None, w!("Captur")).map_err(|error| format!("Captur window not found: {error}"))
+    if let Some(raw_window) = APP_WINDOW.get() {
+        return Ok(HWND(*raw_window as *mut core::ffi::c_void));
     }
+
+    struct Search {
+        process_id: u32,
+        window: Option<HWND>,
+    }
+
+    unsafe extern "system" fn visit_window(window: HWND, parameter: LPARAM) -> BOOL {
+        let search = unsafe { &mut *(parameter.0 as *mut Search) };
+        let mut process_id = 0;
+        unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
+        if process_id != search.process_id {
+            return true.into();
+        }
+
+        let mut title = [0_u16; 32];
+        let length = unsafe { GetWindowTextW(window, &mut title) }.max(0) as usize;
+        const CAPTUR_TITLE: [u16; 6] = [67, 97, 112, 116, 117, 114];
+        if title.get(..length) == Some(CAPTUR_TITLE.as_slice()) {
+            search.window = Some(window);
+        }
+        true.into()
+    }
+
+    let mut search = Search {
+        process_id: std::process::id(),
+        window: None,
+    };
+    unsafe {
+        EnumWindows(
+            Some(visit_window),
+            LPARAM((&mut search as *mut Search).cast::<core::ffi::c_void>() as isize),
+        )
+        .map_err(|error| format!("could not enumerate Captur windows: {error}"))?;
+    }
+    let window = search
+        .window
+        .ok_or_else(|| "Captur window not found in the current process".to_owned())?;
+    let _ = APP_WINDOW.set(window.0 as usize);
+    Ok(window)
+}
+
+pub fn cache_app_window(raw_window: isize) {
+    let _ = APP_WINDOW.set(raw_window as usize);
 }
 
 pub fn show_overlay(bounds: PixelRect) -> Result<(), String> {
@@ -158,6 +199,15 @@ pub fn hide_window() {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
+}
+
+pub fn wake_for_hotkey() -> bool {
+    let Ok(hwnd) = app_window() else {
+        return false;
+    };
+    // The hotkey listener runs on a different thread from winit. The asynchronous variant posts
+    // the show request instead of blocking until the hidden UI thread processes window messages.
+    unsafe { ShowWindowAsync(hwnd, SW_SHOWNA).as_bool() }
 }
 
 pub fn is_workspace_visible() -> bool {

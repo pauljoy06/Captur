@@ -27,6 +27,7 @@ public static class CapturAcceptanceNative {
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
@@ -83,12 +84,9 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 function Send-Chord([byte]$key) {
-    [CapturAcceptanceNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [CapturAcceptanceNative]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
-    [CapturAcceptanceNative]::keybd_event($key, 0, 0, [UIntPtr]::Zero)
-    [CapturAcceptanceNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero)
-    [CapturAcceptanceNative]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
-    [CapturAcceptanceNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    $character = [char]::ToLowerInvariant([char]$key)
+    [Windows.Forms.SendKeys]::SendWait("^%$character")
+    Start-Sleep -Milliseconds 120
 }
 
 function Send-Key([byte]$key) {
@@ -109,7 +107,28 @@ function Wait-WindowVisible([bool]$visible, [int]$timeoutMs) {
         if ($isVisible -eq $visible) { return [int]$timer.ElapsedMilliseconds }
         Start-Sleep -Milliseconds 5
     }
-    throw "Captur window visibility did not become $visible within $timeoutMs ms"
+    $windows = if ($null -ne $script:capturProcess) {
+        [CapturAcceptanceNative]::DescribeWindows([uint32]$script:capturProcess.Id)
+    } else {
+        'process unavailable'
+    }
+    throw "Captur window visibility did not become $visible within $timeoutMs ms. Windows: $windows"
+}
+
+function Wait-HotkeysReady([string]$path, [int]$timeoutMs) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($timer.ElapsedMilliseconds -lt $timeoutMs) {
+        if (Test-Path $path) {
+            $registrations = @(
+                Get-Content $path | Where-Object {
+                    $_ -like 'registered Ctrl+Alt+*' -or $_ -like 'failed Ctrl+Alt+*'
+                }
+            )
+            if ($registrations.Count -ge 6) { return [int]$timer.ElapsedMilliseconds }
+        }
+        Start-Sleep -Milliseconds 10
+    }
+    throw "Captur hotkeys were not ready within $timeoutMs ms"
 }
 
 function Wait-ClipboardImage([uint32]$before, [int]$timeoutMs) {
@@ -160,6 +179,9 @@ $backupFormats = @($backup.GetFormats($false))
 [void][CapturAcceptanceNative]::GetCursorPos([ref]$originalCursor)
 $script:capturProcess = $null
 $targetForm = $null
+$hotkeyLog = [IO.Path]::ChangeExtension($ResultPath, '.hotkeys.log')
+$env:CAPTUR_HOTKEY_LOG = $hotkeyLog
+Remove-Item $hotkeyLog -Force -ErrorAction SilentlyContinue
 
 try {
     $startup = [Diagnostics.Stopwatch]::StartNew()
@@ -175,7 +197,7 @@ try {
     if ((Get-CapturWindow) -eq [IntPtr]::Zero) { throw 'Captur did not create a top-level window' }
     $results.startup_to_resident_ms = [int]$startup.ElapsedMilliseconds
     [void](Wait-WindowVisible $false 2000)
-    Start-Sleep -Milliseconds 1000
+    $results.hotkey_registration_ready_ms = Wait-HotkeysReady $hotkeyLog 15000
 
     $virtual = [Windows.Forms.SystemInformation]::VirtualScreen
     $primary = [Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -185,8 +207,16 @@ try {
         primary = "$($primary.Left),$($primary.Top) $($primary.Width)x$($primary.Height)"
     }
 
+    $workspaceTimer = [Diagnostics.Stopwatch]::StartNew()
+    Send-Chord 0x57
+    $results.workspace_hotkey_to_visible_ms = Wait-WindowVisible $true 5000
+    Start-Sleep -Milliseconds 1000
+    Send-Chord 0x57
+    $results.workspace_hotkey_to_hidden_ms = Wait-WindowVisible $false 5000
+    $results.workspace_toggle_elapsed_ms = [int]$workspaceTimer.ElapsedMilliseconds
+
     $hotkeyTimer = [Diagnostics.Stopwatch]::StartNew()
-    Send-Chord 0x34
+    Send-Chord 0x53
     [void](Wait-WindowVisible $true 15000)
     $overlayWidth = 0
     $overlayHeight = 0
@@ -230,7 +260,7 @@ try {
     Start-Sleep -Milliseconds 40
     [CapturAcceptanceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     # Give the overlay one input/repaint cycle to latch the physical drag origin before moving.
-    Start-Sleep -Milliseconds 80
+    Start-Sleep -Milliseconds 200
     for ($step = 1; $step -le 12; $step++) {
         $x = $startX + [int](($endX - $startX) * $step / 12)
         $y = $startY + [int](($endY - $startY) * $step / 12)
@@ -258,7 +288,7 @@ try {
 
     $before = [CapturAcceptanceNative]::GetClipboardSequenceNumber()
     $sameTimer = [Diagnostics.Stopwatch]::StartNew()
-    Send-Chord 0x35
+    Send-Chord 0x52
     $same = Wait-ClipboardImage $before 15000
     if ($same.width -ne $region.width -or $same.height -ne $region.height) {
         throw "Same-region dimensions changed to $($same.width)x$($same.height)"
@@ -273,7 +303,7 @@ try {
     )
     $before = [CapturAcceptanceNative]::GetClipboardSequenceNumber()
     $monitorTimer = [Diagnostics.Stopwatch]::StartNew()
-    Send-Chord 0x37
+    Send-Chord 0x4D
     $monitor = Wait-ClipboardImage $before 15000
     if ($monitor.width -lt 100 -or $monitor.height -lt 100) {
         throw "Monitor capture bitmap was implausibly small: $($monitor.width)x$($monitor.height)"
@@ -288,13 +318,20 @@ try {
     $targetForm.Location = New-Object Drawing.Point(($primary.Left + 240), ($primary.Top + 180))
     $targetForm.ClientSize = New-Object Drawing.Size(640, 360)
     $targetForm.Show()
-    $targetForm.Activate()
-    [void][CapturAcceptanceNative]::SetForegroundWindow($targetForm.Handle)
-    [Windows.Forms.Application]::DoEvents()
-    Start-Sleep -Milliseconds 150
+    $foregroundTimer = [Diagnostics.Stopwatch]::StartNew()
+    while ([CapturAcceptanceNative]::GetForegroundWindow() -ne $targetForm.Handle -and $foregroundTimer.ElapsedMilliseconds -lt 3000) {
+        $targetForm.Activate()
+        [void][CapturAcceptanceNative]::SetForegroundWindow($targetForm.Handle)
+        [Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 25
+    }
+    if ([CapturAcceptanceNative]::GetForegroundWindow() -ne $targetForm.Handle) {
+        throw 'Could not activate the active-window capture target'
+    }
+    Start-Sleep -Milliseconds 100
     $before = [CapturAcceptanceNative]::GetClipboardSequenceNumber()
     $activeTimer = [Diagnostics.Stopwatch]::StartNew()
-    Send-Chord 0x38
+    Send-Chord 0x41
     $active = Wait-ClipboardImage $before 15000
     if ($active.width -lt 100 -or $active.height -lt 100) {
         throw "Active-window dimensions were implausible: $($active.width)x$($active.height)"
@@ -306,8 +343,37 @@ try {
     $targetForm = $null
     [void](Wait-WindowVisible $false 3000)
 
+    $beforeNote = [CapturAcceptanceNative]::GetClipboardSequenceNumber()
+    Send-Chord 0x4E
+    [void](Wait-WindowVisible $true 15000)
+    [void][CapturAcceptanceNative]::SetCursorPos($startX, $startY)
+    Start-Sleep -Milliseconds 40
+    [CapturAcceptanceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 200
+    for ($step = 1; $step -le 12; $step++) {
+        $x = $startX + [int](($endX - $startX) * $step / 12)
+        $y = $startY + [int](($endY - $startY) * $step / 12)
+        [void][CapturAcceptanceNative]::SetCursorPos($x, $y)
+        Start-Sleep -Milliseconds 8
+    }
+    Start-Sleep -Milliseconds 40
+    [CapturAcceptanceNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    $noteCapture = Wait-ClipboardImage $beforeNote 5000
+    [void](Wait-WindowVisible $true 3000)
+    [CapturAcceptanceNative+RECT]$noteRect = New-Object CapturAcceptanceNative+RECT
+    [void][CapturAcceptanceNative]::GetWindowRect((Get-CapturWindow), [ref]$noteRect)
+    $noteWidth = $noteRect.Right - $noteRect.Left
+    $noteHeight = $noteRect.Bottom - $noteRect.Top
+    if ($noteWidth -lt 300 -or $noteHeight -lt 80 -or $noteWidth -ge $virtual.Width -or $noteHeight -ge $virtual.Height) {
+        throw "Capture + Note did not show a compact prompt: ${noteWidth}x${noteHeight}"
+    }
+    $results.capture_note_dimensions = "$($noteCapture.width)x$($noteCapture.height)"
+    $results.capture_note_prompt_bounds = "$($noteRect.Left),$($noteRect.Top) ${noteWidth}x${noteHeight}"
+    Send-Key 0x1B
+    [void](Wait-WindowVisible $false 3000)
+
     $beforeCancel = [CapturAcceptanceNative]::GetClipboardSequenceNumber()
-    Send-Chord 0x34
+    Send-Chord 0x53
     [void](Wait-WindowVisible $true 15000)
     Send-Key 0x1B
     $results.escape_cancel_to_hidden_ms = Wait-WindowVisible $false 3000
@@ -317,6 +383,7 @@ try {
 
     $results.capture_acceptance = 'passed'
 } finally {
+    Remove-Item Env:CAPTUR_HOTKEY_LOG -ErrorAction SilentlyContinue
     if ($null -ne $targetForm) {
         try { $targetForm.Close(); $targetForm.Dispose() } catch {}
     }

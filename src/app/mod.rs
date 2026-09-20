@@ -7,6 +7,7 @@ use std::{
 };
 
 use egui::{Color32, CornerRadius, RichText, Stroke, StrokeKind, TextureHandle};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::{
     annotations::{AnnotationDocument, AnnotationItem, AnnotationPoint, AnnotationTool},
@@ -125,13 +126,25 @@ pub struct CapturApp {
     annotation_tool: AnnotationTool,
     annotation_drag_start: Option<AnnotationPoint>,
     annotation_text: String,
+    workspace_visible: bool,
     workspace_was_visible_before_capture: bool,
     overlay_bounds_guard: Option<windows::OverlayBoundsGuard>,
 }
 
 impl CapturApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, workspace_visible: bool) -> Self {
         theme::apply(&cc.egui_ctx);
+        let window_initialization_error = cc
+            .window_handle()
+            .map_err(|error| format!("could not access the Captur window handle: {error}"))
+            .and_then(|handle| match handle.as_raw() {
+                RawWindowHandle::Win32(handle) => {
+                    windows::cache_app_window(handle.hwnd.get());
+                    Ok(())
+                }
+                _ => Err("Captur did not receive a Win32 window handle".to_owned()),
+            })
+            .err();
         let capture_initialization_error = dxgi::initialize().err();
         let hotkeys = HotkeyReceiver::start(cc.egui_ctx.clone());
         let (worker_sender, worker_receiver) = mpsc::channel();
@@ -139,7 +152,7 @@ impl CapturApp {
         let (tray, mut status) = match TrayReceiver::start(cc.egui_ctx.clone()) {
             Ok(tray) => (
                 Some(tray),
-                "Ready · Ctrl+Shift+4 captures a region".to_owned(),
+                "Ready · Ctrl+Alt+S captures a region".to_owned(),
             ),
             Err(error) => (
                 None,
@@ -148,8 +161,10 @@ impl CapturApp {
         };
         if let Some(error) = capture_initialization_error {
             status = format!("Capture initialization will retry on first use: {error}");
+        } else if let Some(error) = window_initialization_error {
+            status = format!("Window initialization will retry on first use: {error}");
         }
-        Self {
+        let app = Self {
             mode: AppMode::Workspace,
             hotkeys,
             session: EvidenceSession::default(),
@@ -184,9 +199,14 @@ impl CapturApp {
             annotation_tool: AnnotationTool::Arrow,
             annotation_drag_start: None,
             annotation_text: String::new(),
+            workspace_visible,
             workspace_was_visible_before_capture: false,
             overlay_bounds_guard: None,
+        };
+        if !workspace_visible {
+            windows::hide_window();
         }
+        app
     }
 
     fn poll_tray(&mut self, context: &egui::Context) {
@@ -194,7 +214,7 @@ impl CapturApp {
             match event {
                 TrayEvent::ShowWorkspace => {
                     self.mode = AppMode::Workspace;
-                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    self.workspace_visible = true;
                     if let Err(error) = windows::show_workspace() {
                         self.status = error;
                     }
@@ -214,6 +234,9 @@ impl CapturApp {
                     self.begin_capture(context, CaptureAction::CopyOnly, Some(Instant::now()))
                 }
                 Ok(HotkeyEvent::CaptureSameRegion) => self.capture_same_region(context),
+                Ok(HotkeyEvent::CaptureNote) => {
+                    self.begin_capture(context, CaptureAction::CaptureNote, Some(Instant::now()))
+                }
                 Ok(HotkeyEvent::CaptureMonitor) => match windows::monitor_under_cursor() {
                     Ok(rect) => self.capture_rect(context, rect, "monitor"),
                     Err(error) => self.status = error,
@@ -222,17 +245,26 @@ impl CapturApp {
                     Ok(rect) => self.capture_rect(context, rect, "active window"),
                     Err(error) => self.status = error,
                 },
-                Ok(HotkeyEvent::ShowWorkspace) => {
-                    self.mode = AppMode::Workspace;
-                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    if let Err(error) = windows::show_workspace() {
-                        self.status = error;
-                    }
-                    context.request_repaint();
-                }
+                Ok(HotkeyEvent::ToggleWorkspace) => self.toggle_workspace(context),
                 Err(error) => self.status = error,
             }
         }
+    }
+
+    fn toggle_workspace(&mut self, context: &egui::Context) {
+        if self.mode == AppMode::Workspace && self.workspace_visible {
+            self.workspace_visible = false;
+            windows::hide_window();
+            self.status = "Captur is still running in the notification area".into();
+            return;
+        }
+
+        self.mode = AppMode::Workspace;
+        self.workspace_visible = true;
+        if let Err(error) = windows::show_workspace() {
+            self.status = error;
+        }
+        context.request_repaint();
     }
 
     fn poll_workers(&mut self) {
@@ -277,7 +309,7 @@ impl CapturApp {
         action: CaptureAction,
         hotkey_received: Option<Instant>,
     ) {
-        self.workspace_was_visible_before_capture = windows::is_workspace_visible();
+        self.workspace_was_visible_before_capture = self.workspace_visible;
         if let Err(error) = windows::hide_for_capture() {
             self.status = error;
             return;
@@ -332,12 +364,12 @@ impl CapturApp {
         let Some(region) = self.last_region else {
             self.status = "No previous region is available yet".into();
             self.mode = AppMode::Workspace;
-            context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.workspace_visible = true;
             let _ = windows::show_workspace();
             return;
         };
 
-        self.workspace_was_visible_before_capture = windows::is_workspace_visible();
+        self.workspace_was_visible_before_capture = self.workspace_visible;
         if let Err(error) = windows::hide_for_capture() {
             self.status = error;
             return;
@@ -378,7 +410,7 @@ impl CapturApp {
 
     fn capture_rect(&mut self, context: &egui::Context, rect: PixelRect, kind: &str) {
         let started = Instant::now();
-        self.workspace_was_visible_before_capture = windows::is_workspace_visible();
+        self.workspace_was_visible_before_capture = self.workspace_visible;
         if let Err(error) = windows::hide_for_capture() {
             self.status = error;
             return;
@@ -676,8 +708,8 @@ impl CapturApp {
             .toast_until
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
+            self.workspace_visible = false;
             windows::hide_window();
-            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.toast_until = None;
             self.mode = AppMode::Workspace;
         } else {
@@ -729,6 +761,7 @@ impl CapturApp {
 
         if cancel {
             self.note_frame = None;
+            self.workspace_visible = false;
             windows::hide_window();
             self.mode = AppMode::Workspace;
         } else if submit {
@@ -737,6 +770,7 @@ impl CapturApp {
                 self.add_evidence_frame(&context, frame, caption);
                 self.status = "Capture added to evidence".into();
             }
+            self.workspace_visible = false;
             windows::hide_window();
             self.mode = AppMode::Workspace;
         }
@@ -1077,7 +1111,7 @@ impl CapturApp {
                     if components::primary_button(ui, "Capture region").clicked() {
                         requests.capture = Some(CaptureAction::CopyOnly);
                     }
-                    components::shortcut_chip(ui, "Ctrl+Shift+4");
+                    components::shortcut_chip(ui, "Ctrl+Alt+S");
                     ui.label(
                         RichText::new("Drag, release, and paste immediately.")
                             .small()
@@ -1094,14 +1128,15 @@ impl CapturApp {
                 if components::secondary_button(ui, "Capture + note").clicked() {
                     requests.capture = Some(CaptureAction::CaptureNote);
                 }
+                components::shortcut_chip(ui, "Ctrl+Alt+N");
                 if components::secondary_button(ui, "Full monitor").clicked() {
                     requests.capture_monitor = true;
                 }
-                components::shortcut_chip(ui, "Ctrl+Shift+7");
+                components::shortcut_chip(ui, "Ctrl+Alt+M");
                 if components::secondary_button(ui, "Active window").clicked() {
                     requests.capture_active_window = true;
                 }
-                components::shortcut_chip(ui, "Ctrl+Shift+8");
+                components::shortcut_chip(ui, "Ctrl+Alt+A");
             });
 
             ui.add_space(theme::SPACE_2);
@@ -1111,9 +1146,9 @@ impl CapturApp {
                         self.capture_same_region(context);
                     }
                 });
-                components::shortcut_chip(ui, "Ctrl+Shift+5");
+                components::shortcut_chip(ui, "Ctrl+Alt+R");
                 ui.label(
-                    RichText::new("Workspace shortcut: Ctrl+Shift+6")
+                    RichText::new("Show or hide workspace: Ctrl+Alt+W")
                         .small()
                         .color(theme::MUTED),
                 );
@@ -1191,7 +1226,7 @@ impl CapturApp {
                                 .color(theme::TEXT),
                         );
                         ui.label(
-                            RichText::new("Press Ctrl+Shift+4 to capture a region.")
+                            RichText::new("Press Ctrl+Alt+S to capture a region.")
                                 .small()
                                 .color(theme::MUTED),
                         );
@@ -1753,6 +1788,7 @@ impl eframe::App for CapturApp {
             && context.input(|input| input.viewport().close_requested())
         {
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.workspace_visible = false;
             windows::hide_window();
             self.status = "Captur is still running in the notification area".into();
         }
