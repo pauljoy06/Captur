@@ -89,6 +89,11 @@ cargo install cargo-xwin --locked
 # Build Captur
 cd /home/paul/repos/captur
 cargo xwin build --release --target x86_64-pc-windows-msvc
+
+# Stage the release onto the native Windows filesystem
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \
+  "$(wslpath -w scripts/stage-windows-release.ps1)" \
+  -SourcePath "$(wslpath -w target/x86_64-pc-windows-msvc/release/captur.exe)"
 ```
 
 If LLVM was installed with Linuxbrew instead of apt:
@@ -98,18 +103,28 @@ export PATH="/home/linuxbrew/.linuxbrew/opt/llvm/bin:$HOME/.cargo/bin:$PATH"
 cargo xwin build --release --target x86_64-pc-windows-msvc
 ```
 
-The executable is:
+The build artifact remains at:
 
 ```text
 target/x86_64-pc-windows-msvc/release/captur.exe
 ```
 
-Launch it from WSL through Windows:
+The runnable Windows-local copy is staged at:
+
+```text
+%LOCALAPPDATA%\Captur\captur.exe
+```
+
+Launch the staged copy from WSL:
 
 ```bash
-powershell.exe -NoProfile -Command \
-  "& '$(wslpath -w target/x86_64-pc-windows-msvc/release/captur.exe)'"
+powershell.exe -NoProfile -NonInteractive -Command \
+  "Start-Process (Join-Path \$env:LOCALAPPDATA 'Captur\captur.exe')"
 ```
+
+This checkout also provides the Fish helpers `capturBuild` and `capturRun`. `capturBuild` validates, builds, and stages the executable. `capturRun` launches the Windows-local copy. If `dist/captur.exe` is currently resident, the build keeps that WSL-side artifact untouched, emits a warning, and still refreshes the Windows-local copy.
+
+Do not run a rebuilt executable directly from `\\wsl.localhost\...` while an older Captur instance from the same path is still resident. Windows can retain the old image mapping for that UNC path and terminate the new launch with `STATUS_ENTRYPOINT_NOT_FOUND`. Exit the resident instance from its tray menu before replacing that path, or use the Windows-local staged copy above.
 
 ### Alternative: use Windows Cargo from WSL
 
