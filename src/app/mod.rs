@@ -45,6 +45,7 @@ enum CaptureAction {
     CopyOnly,
     AddEvidence,
     CaptureNote,
+    Annotate,
 }
 
 #[derive(Default)]
@@ -236,6 +237,9 @@ impl CapturApp {
                 Ok(HotkeyEvent::CaptureSameRegion) => self.capture_same_region(context),
                 Ok(HotkeyEvent::CaptureNote) => {
                     self.begin_capture(context, CaptureAction::CaptureNote, Some(Instant::now()))
+                }
+                Ok(HotkeyEvent::CaptureAnnotate) => {
+                    self.begin_capture(context, CaptureAction::Annotate, Some(Instant::now()))
                 }
                 Ok(HotkeyEvent::CaptureMonitor) => match windows::monitor_under_cursor() {
                     Ok(rect) => self.capture_rect(context, rect, "monitor"),
@@ -604,13 +608,15 @@ impl CapturApp {
                 return;
             }
         };
-        if let Err(error) = clipboard::copy_bgra_to_clipboard(&frame) {
-            self.status = error;
-            self.cancel_overlay();
-            return;
+        if self.capture_action != CaptureAction::Annotate {
+            if let Err(error) = clipboard::copy_bgra_to_clipboard(&frame) {
+                self.status = error;
+                self.cancel_overlay();
+                return;
+            }
+            self.timings.release_to_clipboard = Some(released_at.elapsed());
         }
         self.overlay_bounds_guard = None;
-        self.timings.release_to_clipboard = Some(released_at.elapsed());
         self.last_region = Some(selected);
         self.last_capture_texture = Some(context.load_texture(
             "last-capture",
@@ -618,7 +624,9 @@ impl CapturApp {
             egui::TextureOptions::LINEAR,
         ));
         self.last_capture = Some(frame.clone());
-        self.record_timings();
+        if self.capture_action != CaptureAction::Annotate {
+            self.record_timings();
+        }
         self.overlay_texture = None;
         self.overlay_frame = None;
 
@@ -639,6 +647,7 @@ impl CapturApp {
                     let _ = windows::show_workspace();
                 }
             }
+            CaptureAction::Annotate => self.start_annotation(context),
         }
     }
 
@@ -798,6 +807,7 @@ impl CapturApp {
         self.annotation_drag_start = None;
         self.annotation_text.clear();
         self.mode = AppMode::Annotate;
+        self.workspace_visible = true;
         if let Err(error) = windows::show_workspace() {
             self.status = error;
         }
@@ -1129,6 +1139,10 @@ impl CapturApp {
                     requests.capture = Some(CaptureAction::CaptureNote);
                 }
                 components::shortcut_chip(ui, "Ctrl+Alt+N");
+                if components::secondary_button(ui, "Capture + annotate").clicked() {
+                    requests.capture = Some(CaptureAction::Annotate);
+                }
+                components::shortcut_chip(ui, "Ctrl+Alt+C");
                 if components::secondary_button(ui, "Full monitor").clicked() {
                     requests.capture_monitor = true;
                 }

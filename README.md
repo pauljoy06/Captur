@@ -11,6 +11,7 @@ Captur is a Windows 11 snipping and evidence-export application written in Rust.
   - `Ctrl+Alt+M`: capture the monitor under the cursor
   - `Ctrl+Alt+A`: capture the active window
   - `Ctrl+Alt+N`: region capture followed by the compact evidence-note prompt
+  - `Ctrl+Alt+C`: region capture followed immediately by annotation; finishing copies the annotated screenshot
 - Multi-adapter, multi-monitor DXGI Desktop Duplication capture.
 - Native-pixel virtual-desktop stitching, including negative monitor coordinates and output rotation.
 - Per-monitor-v2 DPI awareness and an egui overlay positioned in physical desktop coordinates.
@@ -19,6 +20,7 @@ Captur is a Windows 11 snipping and evidence-export application written in Rust.
 - Background WIC PNG saving.
 - In-memory evidence sessions with captions, Before/Action/After labels, reordering, removal, and Capture + Note.
 - Optional annotation workspace with Arrow, Rectangle, Highlight, Text, Blur/redact, and sequential number markers. The primary tools are keyboard accessible with `A`, `R`, `H`, `T`, `B`, `1`, `C`, `Enter`, and `Escape`.
+- Dedicated capture-and-annotate flow that defers clipboard transfer until the rendered annotations are applied.
 - Lightweight always-on-top pinned screenshot viewport for visual comparison.
 - Notification-area lifecycle with **Show Captur** and **Exit** actions. Closing the workspace keeps the resident capture process running.
 - One embedded multi-resolution Captur icon shared by the executable, taskbar window, and notification area.

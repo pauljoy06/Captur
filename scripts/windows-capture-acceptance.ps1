@@ -124,7 +124,7 @@ function Wait-HotkeysReady([string]$path, [int]$timeoutMs) {
                     $_ -like 'registered Ctrl+Alt+*' -or $_ -like 'failed Ctrl+Alt+*'
                 }
             )
-            if ($registrations.Count -ge 6) { return [int]$timer.ElapsedMilliseconds }
+            if ($registrations.Count -ge 7) { return [int]$timer.ElapsedMilliseconds }
         }
         Start-Sleep -Milliseconds 10
     }
@@ -380,6 +380,64 @@ try {
     if ([CapturAcceptanceNative]::GetClipboardSequenceNumber() -ne $beforeCancel) {
         throw 'Escape cancellation unexpectedly changed the clipboard'
     }
+
+    $beforeAnnotate = [CapturAcceptanceNative]::GetClipboardSequenceNumber()
+    Send-Chord 0x43
+    [void](Wait-WindowVisible $true 15000)
+    [void][CapturAcceptanceNative]::SetCursorPos($startX, $startY)
+    Start-Sleep -Milliseconds 40
+    [CapturAcceptanceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 200
+    for ($step = 1; $step -le 12; $step++) {
+        $x = $startX + [int](($endX - $startX) * $step / 12)
+        $y = $startY + [int](($endY - $startY) * $step / 12)
+        [void][CapturAcceptanceNative]::SetCursorPos($x, $y)
+        Start-Sleep -Milliseconds 8
+    }
+    Start-Sleep -Milliseconds 40
+    [CapturAcceptanceNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+
+    $annotationTimer = [Diagnostics.Stopwatch]::StartNew()
+    [CapturAcceptanceNative+RECT]$annotationRect = New-Object CapturAcceptanceNative+RECT
+    $annotationWorkspaceReady = $false
+    do {
+        [void][CapturAcceptanceNative]::GetWindowRect((Get-CapturWindow), [ref]$annotationRect)
+        $annotationWidth = $annotationRect.Right - $annotationRect.Left
+        $annotationHeight = $annotationRect.Bottom - $annotationRect.Top
+        if ($annotationWidth -ge 600 -and $annotationHeight -ge 400 -and
+            ($annotationWidth -lt ($virtual.Width - 4) -or $annotationHeight -lt ($virtual.Height - 4))) {
+            $annotationWorkspaceReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 10
+    } while ($annotationTimer.ElapsedMilliseconds -lt 5000)
+    if (-not $annotationWorkspaceReady) {
+        throw "Capture + Annotate did not show the annotation workspace: ${annotationWidth}x${annotationHeight}"
+    }
+    Start-Sleep -Milliseconds 250
+    if ([CapturAcceptanceNative]::GetClipboardSequenceNumber() -ne $beforeAnnotate) {
+        throw 'Capture + Annotate copied the raw selection before annotations were finished'
+    }
+
+    $arrowStartX = $annotationRect.Left + [int]($annotationWidth * 0.4)
+    $arrowStartY = $annotationRect.Top + [int]($annotationHeight * 0.45)
+    $arrowEndX = $annotationRect.Left + [int]($annotationWidth * 0.6)
+    $arrowEndY = $annotationRect.Top + [int]($annotationHeight * 0.62)
+    [void][CapturAcceptanceNative]::SetCursorPos($arrowStartX, $arrowStartY)
+    [CapturAcceptanceNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+    [void][CapturAcceptanceNative]::SetCursorPos($arrowEndX, $arrowEndY)
+    Start-Sleep -Milliseconds 80
+    [CapturAcceptanceNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 100
+    Send-Key 0x0D
+    $annotated = Wait-ClipboardImage $beforeAnnotate 5000
+    if ([Math]::Abs($annotated.width - $region.width) -gt 4 -or
+        [Math]::Abs($annotated.height - $region.height) -gt 4) {
+        throw "Annotated clipboard dimensions changed to $($annotated.width)x$($annotated.height)"
+    }
+    $results.capture_annotate_dimensions = "$($annotated.width)x$($annotated.height)"
+    $results.capture_annotate_finish_to_clipboard_ms = $annotated.elapsed_ms
 
     $results.capture_acceptance = 'passed'
 } finally {

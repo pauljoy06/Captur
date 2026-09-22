@@ -18,6 +18,7 @@ const TOGGLE_WORKSPACE_ID: i32 = 0x5053_0003;
 const CAPTURE_MONITOR_ID: i32 = 0x5053_0004;
 const CAPTURE_ACTIVE_WINDOW_ID: i32 = 0x5053_0005;
 const CAPTURE_NOTE_ID: i32 = 0x5053_0006;
+const CAPTURE_ANNOTATE_ID: i32 = 0x5053_0007;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyEvent {
@@ -27,6 +28,7 @@ pub enum HotkeyEvent {
     CaptureMonitor,
     CaptureActiveWindow,
     CaptureNote,
+    CaptureAnnotate,
 }
 
 pub struct HotkeyReceiver {
@@ -50,6 +52,7 @@ impl HotkeyReceiver {
                         (CAPTURE_MONITOR_ID, b'M', "Ctrl+Alt+M"),
                         (CAPTURE_ACTIVE_WINDOW_ID, b'A', "Ctrl+Alt+A"),
                         (CAPTURE_NOTE_ID, b'N', "Ctrl+Alt+N"),
+                        (CAPTURE_ANNOTATE_ID, b'C', "Ctrl+Alt+C"),
                     ];
                     let mut registered_ids = Vec::with_capacity(registrations.len());
                     for (id, key, label) in registrations {
@@ -81,6 +84,7 @@ impl HotkeyReceiver {
                                 CAPTURE_MONITOR_ID => Some(HotkeyEvent::CaptureMonitor),
                                 CAPTURE_ACTIVE_WINDOW_ID => Some(HotkeyEvent::CaptureActiveWindow),
                                 CAPTURE_NOTE_ID => Some(HotkeyEvent::CaptureNote),
+                                CAPTURE_ANNOTATE_ID => Some(HotkeyEvent::CaptureAnnotate),
                                 _ => None,
                             };
                             if let Some(event) = event {
