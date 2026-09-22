@@ -1,5 +1,7 @@
 #[cfg(target_os = "windows")]
 pub mod dxgi;
+#[cfg(target_os = "windows")]
+mod gdi;
 pub mod region;
 
 use std::sync::Arc;

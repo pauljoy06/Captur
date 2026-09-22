@@ -36,19 +36,33 @@ pub fn initialize() -> Result<(), String> {
     CAPTURE_ENGINE.with(|engine| {
         let mut engine = engine.borrow_mut();
         if engine.is_none() {
-            *engine = Some(unsafe { CaptureEngine::new() }.map_err(capture_error)?);
+            // Desktop Duplication is the fast path, but it is not available in every Windows
+            // session (for example, some remote, locked, or display-transition states). The GDI
+            // fallback is initialized on demand, so a DXGI initialization failure is not fatal.
+            *engine = unsafe { CaptureEngine::new() }.ok();
         }
         Ok(())
     })
 }
 
 pub fn capture_desktop() -> Result<BgraFrame, String> {
+    match capture_desktop_with_duplication() {
+        Ok(frame) => Ok(frame),
+        Err(duplication_error) => super::gdi::capture_desktop().map_err(|fallback_error| {
+            format!(
+                "screenshot capture failed; desktop duplication: {duplication_error}; GDI fallback: {fallback_error}"
+            )
+        }),
+    }
+}
+
+fn capture_desktop_with_duplication() -> windows::core::Result<BgraFrame> {
     // Safety: all COM interfaces are owned RAII values. Mapped pointers are copied before Unmap,
     // and every acquired duplication frame is released before the interface is dropped.
     CAPTURE_ENGINE.with(|engine| {
         let mut engine = engine.borrow_mut();
         if engine.is_none() {
-            *engine = Some(unsafe { CaptureEngine::new() }.map_err(capture_error)?);
+            *engine = Some(unsafe { CaptureEngine::new() }?);
         }
 
         let first = unsafe {
@@ -61,16 +75,11 @@ pub fn capture_desktop() -> Result<BgraFrame, String> {
             Ok(frame) => Ok(frame),
             Err(_) => {
                 *engine = None;
-                *engine = Some(unsafe { CaptureEngine::new() }.map_err(capture_error)?);
+                *engine = Some(unsafe { CaptureEngine::new() }?);
                 unsafe { engine.as_mut().expect("capture engine rebuilt").capture() }
-                    .map_err(capture_error)
             }
         }
     })
-}
-
-fn capture_error(error: windows::core::Error) -> String {
-    format!("desktop duplication failed: {error}")
 }
 
 struct CaptureEngine {

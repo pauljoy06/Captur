@@ -12,7 +12,8 @@ Captur is a Windows 11 snipping and evidence-export application written in Rust.
   - `Ctrl+Alt+A`: capture the active window
   - `Ctrl+Alt+N`: region capture followed by the compact evidence-note prompt
   - `Ctrl+Alt+C`: region capture followed immediately by annotation; finishing copies the annotated screenshot
-- Multi-adapter, multi-monitor DXGI Desktop Duplication capture.
+- Multi-adapter, multi-monitor DXGI Desktop Duplication capture with a GDI fallback for sessions
+  where duplication is temporarily unavailable.
 - Native-pixel virtual-desktop stitching, including negative monitor coordinates and output rotation.
 - Per-monitor-v2 DPI awareness and an egui overlay positioned in physical desktop coordinates.
 - Immediate native `CF_DIBV5` clipboard transfer on mouse release. PNG compression is not involved.
@@ -37,6 +38,7 @@ src/
 ├── app/                 orchestration and egui state machine
 ├── capture/
 │   ├── dxgi.rs          D3D11/DXGI desktop duplication and stitching
+│   ├── gdi.rs           virtual-desktop fallback when duplication is unavailable
 │   └── region.rs        physical-pixel geometry
 ├── platform/
 │   ├── hotkeys.rs       resident RegisterHotKey message thread
@@ -62,13 +64,13 @@ build.rs                 dependency-free Windows resource compilation
 The critical path is:
 
 ```text
-hotkey → hide Captur → DXGI snapshot → overlay
+hotkey → hide Captur → DXGI snapshot (GDI fallback) → overlay
 mouse release → native crop → CF_DIBV5 clipboard → confirmation
 ```
 
 WIC compression, disk writes, session JSON, and PDF generation are never required before the clipboard is populated.
 
-DXGI devices and Desktop Duplication objects are initialized once and retained on the UI thread. Each output keeps its latest completed frame so an unchanged desktop does not turn a short duplication timeout into a failed snip. Access-loss and other duplication failures discard the engine and rebuild it once before the capture is reported as failed.
+DXGI devices and Desktop Duplication objects are initialized once and retained on the UI thread. Each output keeps its latest completed frame so an unchanged desktop does not turn a short duplication timeout into a failed snip. Access-loss and other duplication failures discard the engine and rebuild it once. If duplication is still unavailable, Captur snapshots the virtual desktop through GDI so remote-session, display-transition, and driver-specific duplication failures do not disable screenshots.
 
 ## Build from WSL2 with the Windows MSVC target
 
@@ -155,9 +157,9 @@ For the Windows-native build alternative, Visual Studio Build Tools and the Wind
 
 ## Technical risks and current tradeoffs
 
-- **DXGI lifecycle:** Captur retains one duplication object per attached output to keep repeated captures responsive. Any acquisition failure rebuilds the complete engine once, which also picks up monitor and adapter changes. Display changes and secure-desktop transitions can still make that individual capture fail after the retry.
+- **DXGI lifecycle:** Captur retains one duplication object per attached output to keep repeated captures responsive. Any acquisition failure rebuilds the complete engine once, which also picks up monitor and adapter changes. If the retry fails, Captur uses a slower GDI virtual-desktop snapshot. Secure desktops and protected content can still prevent either Windows capture API from returning usable pixels.
 - **Mixed-DPI overlay:** the process is per-monitor-v2 aware and all selection/crop geometry uses physical pixels, including negative virtual-desktop coordinates. A single HWND spanning monitors with different scale factors still requires real Windows hardware validation because winit/egui controls the rendering scale for that HWND.
-- **Capture freshness:** Captur hides its window and calls `DwmFlush` before acquiring a frame. Desktop Duplication can still return timeout or access-lost errors during display changes, secure-desktop transitions, or device resets. Those errors are reported and the next capture creates fresh DXGI state.
+- **Capture freshness:** Captur hides its window and calls `DwmFlush` before acquiring a frame. Desktop Duplication can still return timeout or access-lost errors during display changes, secure-desktop transitions, or device resets. Captur rebuilds DXGI once, then falls back to GDI for that capture; the next capture tries fresh DXGI state again.
 - **PDF memory:** export consumes an immutable session snapshot and raw BGRA images on a worker thread. This preserves screenshot quality and capture responsiveness, but a session containing many 4K screenshots can temporarily use substantial memory while the PDF is assembled.
 - **WSL boundary:** compilation is validated in WSL with the MSVC target and `cargo-xwin`. Global hotkeys, DXGI, clipboard, native dialogs, tray behavior, and PDF export have also been exercised by the Windows acceptance scripts. The latest validation covered a 4480×1440 two-monitor virtual desktop. A monitor positioned left or above the primary display and a mixed-scale monitor pair remain manual hardware checks.
 - **Secondary egui viewports:** pinned screenshots use egui's immediate native viewport support. Always-on-top behavior, resizing, and close handling should be checked against the installed Windows graphics driver and desktop configuration.
